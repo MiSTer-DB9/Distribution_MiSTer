@@ -41,11 +41,13 @@ for sec in config.sections():
     classify_core_categories
 
     for url in ${!CORE_CATEGORIES[@]} ; do
-        if [[ "${ENCC_CORES[${url}]:-false}" != "false" ]] ; then
-            process_url "${ENCC_CORES[${url}]}" "${CORE_CATEGORIES[${url}]}" "${OUTPUT_FOLDER}"
-        else
-            process_url "${url}" "${CORE_CATEGORIES[${url}]}" "${OUTPUT_FOLDER}"
-        fi
+        for category in ${CORE_CATEGORIES[${url}]} ; do
+            if [[ "${ENCC_CORES[${url}]:-false}" != "false" ]] ; then
+                process_url "${ENCC_CORES[${url}]}" "${category}" "${OUTPUT_FOLDER}"
+            else
+                process_url "${url}" "${category}" "${OUTPUT_FOLDER}"
+            fi
+        done
     done
 
     if [[ "${PUSH_COMMAND}" == "--push" ]] ; then
