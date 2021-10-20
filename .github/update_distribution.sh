@@ -3,8 +3,10 @@
 
 set -euo pipefail
 
-curl -o /tmp/update_distribution.source "https://raw.githubusercontent.com/MiSTer-devel/Distribution_MiSTer/main/.github/update_distribution.sh"
+export ZIPS_CONFIG=/tmp/zips_config.json
+curl -o "${ZIPS_CONFIG}" "https://raw.githubusercontent.com/MiSTer-devel/Distribution_MiSTer/develop/.github/zips_config.json"
 
+curl -o /tmp/update_distribution.source "https://raw.githubusercontent.com/MiSTer-devel/Distribution_MiSTer/main/.github/update_distribution.sh"
 source /tmp/update_distribution.source
 rm /tmp/update_distribution.source
 
