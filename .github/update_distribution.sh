@@ -53,7 +53,10 @@ for sec in config.sections():
     done
 
     if [[ "${PUSH_COMMAND}" == "--push" ]] ; then
-        git checkout -f develop -b main 
+        git checkout -f develop -b main
+        echo "Running detox"
+        detox -v -s utf_8-only -r *
+        echo "Detox done"
         git add "${OUTPUT_FOLDER}"
         git commit -m "-"
         git fetch origin main || true
