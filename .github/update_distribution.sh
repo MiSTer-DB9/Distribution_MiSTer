@@ -52,31 +52,20 @@ for sec in config.sections():
         done
     done
 
-    if [[ "${PUSH_COMMAND}" == "--push" ]] ; then
-        git checkout -f develop -b main
-        echo "Running detox"
-        detox -v -s utf_8-only -r *
-        echo "Detox done"
-        git add "${OUTPUT_FOLDER}"
-        git commit -m "-"
-        git fetch origin main || true
-        if ! git diff --exit-code main origin/main^ ; then
-            export DB_ID="${DB_ID}"
-            export DB_URL="${DB_URL}"
-            export BASE_FILES_URL="${BASE_FILES_URL}"
-            export LATEST_ZIP_URL="${LATEST_ZIP_URL}"
-
-            echo
-            echo "There are changes to push."
-            echo
-
-            curl -o /tmp/calculate_db.py "https://raw.githubusercontent.com/MiSTer-devel/Distribution_MiSTer/main/.github/calculate_db.py"
-            chmod +x /tmp/calculate_db.py
-            /tmp/calculate_db.py
-        else
-            echo "Nothing to be updated."
-        fi
+    if [[ "${PUSH_COMMAND}" != "--push" ]] ; then
+        return
     fi
+
+    git checkout -f develop -b main
+    echo "Running detox"
+    detox -v -s utf_8-only -r *
+    echo "Detox done"
+    git add "${OUTPUT_FOLDER}"
+    git commit -m "-"
+    git fetch origin main || true
+    curl -o /tmp/calculate_db.py "https://raw.githubusercontent.com/MiSTer-devel/Distribution_MiSTer/main/.github/calculate_db.py"
+    chmod +x /tmp/calculate_db.py
+    /tmp/calculate_db.py
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]] ; then
