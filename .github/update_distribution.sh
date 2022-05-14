@@ -56,6 +56,7 @@ for sec in config.sections():
         return
     fi
 
+    git fetch --unshallow origin
     git checkout -f develop -b main
     echo "Running detox"
     detox -v -s utf_8-only -r *
