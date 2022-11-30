@@ -64,7 +64,7 @@ for sec in config.sections():
     git add "${OUTPUT_FOLDER}"
     git commit -m "-"
     git fetch origin main || true
-    curl -o /tmp/calculate_db.py "https://raw.githubusercontent.com/MiSTer-devel/Distribution_MiSTer/main/.github/calculate_db.py"
+    curl -o /tmp/calculate_db.py "https://raw.githubusercontent.com/MiSTer-devel/Distribution_MiSTer/develop/.github/calculate_db.py"
     chmod +x /tmp/calculate_db.py
     /tmp/calculate_db.py
 }
