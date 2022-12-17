@@ -35,7 +35,9 @@ jobs:
     - run: pip install -r .github/requirements.txt
 
     - name: Download Distribution
-      run: ./.github/download_encc_distribution.py .
+      run: |
+        cd .github
+        ./download_encc_distribution.py ..
 
     - name: Commit Distribution
       run: ./.github/commit_distribution.sh
