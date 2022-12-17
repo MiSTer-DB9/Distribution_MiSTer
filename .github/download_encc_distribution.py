@@ -79,7 +79,7 @@ def replace_urls(cores, extra_content_categories, forks):
     for core in cores:
         lower = ore['url'].lower()
         if lower in replacements:
-            print(f'Replaced core: {core['url']} = {replacements[lower]}')
+            print(f'Replaced core: {core["url"]} = {replacements[lower]}')
             core['url'] = replacements[lower]
 
     for key in replacements:
