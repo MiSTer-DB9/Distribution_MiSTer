@@ -40,7 +40,7 @@ def main():
     print(json.dumps(forks))
     print()
 
-    replace_core_urls(cores, forks)
+    replace_urls(cores, extra_content_categories, forks)
 
     target = 'delme'
     if len(sys.argv) > 1:
@@ -69,7 +69,7 @@ def fetch_forks():
                 forks[sec][key] = val
         return forks
 
-def replace_core_urls(cores, forks):
+def replace_urls(cores, extra_content_categories, forks):
     replacements = {}
     for fork in forks['Forks']['syncing_forks'].split(' '):
         upstream_repo = str(Path(forks[fork]['upstream_repo']).with_suffix("")).replace('https:/g', 'https://g')
@@ -77,8 +77,16 @@ def replace_core_urls(cores, forks):
         replacements[upstream_repo.lower()] = fork_repo
 
     for core in cores:
-        if core['url'].lower() in replacements:
-            core['url'] = replacements[core['url'].lower()]
+        lower = ore['url'].lower()
+        if lower in replacements:
+            print(f'Replaced core: {core['url']} = {replacements[lower]}')
+            core['url'] = replacements[lower]
+
+    for key in replacements:
+        if key in extra_content_categories:
+            print(f'Replaced extra content: {replacements[key]} = {key}')
+            extra_content_categories[replacements[key]] = extra_content_categories[key]
+            del extra_content_categories[key]
 
 if __name__ == '__main__':
     main()
