@@ -47,7 +47,7 @@ jobs:
     - name: Commit Distribution
       run: ./.github/commit_distribution.sh
       
-    - name: Update Distribution
+    - name: Calculate & Push DB
       run: |
         set -euo pipefail
         git config --global user.email "theypsilon@gmail.com"
