@@ -1,0 +1,41 @@
+{
+    "cheats_folder_": {
+        "source": "Cheats",
+        "mode": "subfolders"
+    },
+    "nes_palettes": {
+        "source": "games/NES/Palettes"
+    },
+    "gameboy_palettes": {
+        "source": "games/GAMEBOY/Palettes"
+    },
+    "gameboy2p_palettes": {
+        "source": "games/GAMEBOY2P/Palettes"
+    },
+    "gbc_palettes": {
+        "source": "games/GBC/Palettes"
+    },
+    "megaduck_palettes": {
+        "source": "games/MegaDuck/Palettes"
+    },
+    "atari7800_palettes": {
+        "source": "games/ATARI7800/Palettes"
+    },
+    "atari2600_palettes": {
+        "source": "games/Atari2600/Palettes"
+    },
+    "global_filters": {
+        "path": ".",
+        "sources": ["Filters", "Filters_Audio", "Gamma"],
+        "mode": "multi"
+    },
+    "global_fonts": {
+        "source": "font"
+    },
+    "global_shadow_masks": {
+        "source": "Shadow_Masks"
+    },
+    "mra_alternatives": {
+        "source": "_Arcade/_alternatives"
+    }
+}
