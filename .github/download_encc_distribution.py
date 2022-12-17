@@ -78,7 +78,7 @@ def replace_urls(cores, extra_content_categories, forks):
 
     for core in cores:
         lower = core['url'].lower()
-        if lower in replacements:
+        if lower in replacements and 'menu_mister' not in lower:
             print(f'Replaced core: {core["url"]} = {replacements[lower]}')
             core['url'] = replacements[lower]
 
