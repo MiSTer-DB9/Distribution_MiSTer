@@ -31,6 +31,8 @@ jobs:
         curl -o commit_distribution.sh "https://raw.githubusercontent.com/MiSTer-devel/Distribution_MiSTer/develop/.github/commit_distribution.sh"
         curl -o calculate_db.py "https://raw.githubusercontent.com/MiSTer-devel/Distribution_MiSTer/develop/.github/calculate_db.py"
         curl -o requirements.txt "https://raw.githubusercontent.com/MiSTer-devel/Distribution_MiSTer/develop/.github/requirements.txt"
+        
+        chmod +x download_distribution.py commit_distribution.sh calculate_db.py
 
     - run: pip install -r .github/requirements.txt
 
