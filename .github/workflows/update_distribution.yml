@@ -21,15 +21,38 @@ jobs:
       with:
         ref: develop
 
+    - name: Grab Dependencies
+      run: |
+        set -euo pipefail
+        cd .github
+        
+        curl -o zips_config.json "https://raw.githubusercontent.com/MiSTer-devel/Distribution_MiSTer/develop/.github/zips_config.json"
+        curl -o download_distribution.py "https://raw.githubusercontent.com/MiSTer-devel/Distribution_MiSTer/develop/.github/download_distribution.py"
+        curl -o commit_distribution.sh "https://raw.githubusercontent.com/MiSTer-devel/Distribution_MiSTer/develop/.github/commit_distribution.sh"
+        curl -o calculate_db.py "https://raw.githubusercontent.com/MiSTer-devel/Distribution_MiSTer/develop/.github/calculate_db.py"
+        curl -o requirements.txt "https://raw.githubusercontent.com/MiSTer-devel/Distribution_MiSTer/develop/.github/requirements.txt"
+
+    - run: pip install -r .github/requirements.txt
+
+    - name: Download Distribution
+      run: ./.github/download_encc_distribution.py .
+
+    - name: Commit Distribution
+      run: ./.github/commit_distribution.sh
+      
     - name: Update Distribution
       run: |
         set -euo pipefail
         git config --global user.email "theypsilon@gmail.com"
         git config --global user.name "The CI/CD Bot"
-        ./.github/update_distribution.sh . --push
+
+        export DB_ID=distribution_mister
+        export DB_URL=https://raw.githubusercontent.com/MiSTer-DB9/Distribution_MiSTer/main/dbencc.json.zip
+        export BASE_FILES_URL=https://raw.githubusercontent.com/MiSTer-DB9/Distribution_MiSTer/%s/
+        export LATEST_ZIP_URL=https://github.com/MiSTer-DB9/Distribution_MiSTer/archive/refs/heads/main.zip
+        export ZIPS_CONFIG=./.github/zips_config.json
+        export LINUX_GITHUB_REPOSITORY=MiSTer-devel/SD-Installer-Win64_MiSTer
+
+        ./.github/calculate_db.py
       env:
-        DB_ID: distribution_mister
-        DB_URL: https://raw.githubusercontent.com/MiSTer-DB9/Distribution_MiSTer/main/dbencc.json.zip
-        BASE_FILES_URL: https://raw.githubusercontent.com/MiSTer-DB9/Distribution_MiSTer/%s/
-        LATEST_ZIP_URL: https://github.com/MiSTer-DB9/Distribution_MiSTer/archive/refs/heads/main.zip
-        LINUX_GITHUB_REPOSITORY: MiSTer-devel/SD-Installer-Win64_MiSTer
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
