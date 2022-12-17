@@ -82,10 +82,11 @@ def replace_urls(cores, extra_content_categories, forks):
             print(f'Replaced core: {core["url"]} = {replacements[lower]}')
             core['url'] = replacements[lower]
 
-    for key in replacements:
-        if key in extra_content_categories:
-            print(f'Replaced extra content: {replacements[key]} = {key}')
-            extra_content_categories[replacements[key]] = extra_content_categories[key]
+    for key in list(extra_content_categories):
+        lower = key.lower()
+        if lower in replacements:
+            print(f'Replaced extra content: {replacements[lower]} = {key}')
+            extra_content_categories[replacements[lower]] = extra_content_categories[key]
             del extra_content_categories[key]
 
 if __name__ == '__main__':
