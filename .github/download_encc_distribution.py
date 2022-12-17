@@ -77,7 +77,7 @@ def replace_urls(cores, extra_content_categories, forks):
         replacements[upstream_repo.lower()] = fork_repo
 
     for core in cores:
-        lower = ore['url'].lower()
+        lower = core['url'].lower()
         if lower in replacements:
             print(f'Replaced core: {core["url"]} = {replacements[lower]}')
             core['url'] = replacements[lower]
