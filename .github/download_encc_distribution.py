@@ -9,28 +9,35 @@ import io
 import sys
 import configparser
 from pathlib import Path
-from download_distribution import process_all, classify_extra_content, fetch_extra_content_urls, fetch_cores, fetch_text, validate_cores, validate_extra_content_urls
+import subprocess
+try:
+    import httpimport
+except ImportError as _:
+    subprocess.run(['python3', '-m', 'pip', 'install', 'requests', 'httpimport'])
+    import httpimport
+
+download_distribution = httpimport.load('download_distribution', 'https://raw.githubusercontent.com/MiSTer-devel/Distribution_MiSTer/develop/.github')
 
 def main():
 
     start = time.time()
 
-    cores = fetch_cores()
-    extra_content_urls = fetch_extra_content_urls()
-    extra_content_categories = classify_extra_content(extra_content_urls)
+    cores = download_distribution.fetch_cores()
+    extra_content_urls = download_distribution.fetch_extra_content_urls()
+    extra_content_categories = download_distribution.classify_extra_content(extra_content_urls)
     forks = fetch_forks()
 
     print(f'Cores {len(cores)}:')
     print(json.dumps(cores))
     print()
 
-    validate_cores(cores)
+    download_distribution.validate_cores(cores)
 
     print(f'Extra Content URLs {len(extra_content_urls)}:')
     print(json.dumps(extra_content_urls))
     print()
 
-    validate_extra_content_urls(extra_content_urls)
+    download_distribution.validate_extra_content_urls(extra_content_urls)
 
     print('Extra Content Categories:')
     print(json.dumps(extra_content_categories))
@@ -42,15 +49,7 @@ def main():
 
     replace_urls(cores, extra_content_categories, forks)
 
-    target = 'delme'
-    if len(sys.argv) > 1:
-        target = sys.argv[1].strip()
-
-    if 'delme' in target.lower():
-        shutil.rmtree(target, ignore_errors=True)
-        Path(target).mkdir(parents=True, exist_ok=True)
-
-    process_all(extra_content_categories, cores, target)
+    download_distribution.process_all(extra_content_categories, cores, download_distribution.read_target_dir())
 
     print()
     print("Time:")
@@ -59,7 +58,7 @@ def main():
     print()
 
 def fetch_forks():
-    with io.StringIO(fetch_text('https://raw.githubusercontent.com/MiSTer-DB9/Forks_MiSTer/master/Forks.ini')) as buf:
+    with io.StringIO(download_distribution.fetch_text('https://raw.githubusercontent.com/MiSTer-DB9/Forks_MiSTer/master/Forks.ini')) as buf:
         config = configparser.ConfigParser(inline_comment_prefixes=(';','#'))
         config.read_file(buf)
         forks = {}
