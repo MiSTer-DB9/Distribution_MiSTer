@@ -12,54 +12,69 @@ jobs:
   update:
     runs-on: ubuntu-20.04
 
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      BASE_FILES_URL: https://raw.githubusercontent.com/MiSTer-DB9/Distribution_MiSTer/%s/
+      DB_JSON_NAME: dbencc.json
+      DB_ID: distribution_mister
+      DB_URL: https://raw.githubusercontent.com/MiSTer-DB9/Distribution_MiSTer/main/dbencc.json.zip
+      ZIPS_CONFIG: /tmp/zips_config.json
+      LINUX_GITHUB_REPOSITORY: MiSTer-devel/SD-Installer-Win64_MiSTer
+      
     steps:
     - name: Install apt-get utilities
-      run: sudo apt-get install detox sharutils
+      run: sudo apt-get install sharutils
 
     - uses: actions/setup-python@v2
       with:
-        python-version: '3.9'
+        python-version: '3.11'
 
     - uses: actions/checkout@v2
       with:
         ref: develop
 
-    - name: Grab Dependencies
+    - name: Set Git User
       run: |
-        set -euo pipefail
-        cd .github
-        
-        curl -o zips_config.json "https://raw.githubusercontent.com/MiSTer-devel/Distribution_MiSTer/develop/.github/zips_config.json"
-        curl -o download_distribution.py "https://raw.githubusercontent.com/MiSTer-devel/Distribution_MiSTer/develop/.github/download_distribution.py"
-        curl -o commit_distribution.sh "https://raw.githubusercontent.com/MiSTer-devel/Distribution_MiSTer/develop/.github/commit_distribution.sh"
-        curl -o calculate_db.py "https://raw.githubusercontent.com/MiSTer-devel/Distribution_MiSTer/develop/.github/calculate_db.py"
-        curl -o requirements.txt "https://raw.githubusercontent.com/MiSTer-devel/Distribution_MiSTer/develop/.github/requirements.txt"
-        
-        chmod +x download_distribution.py commit_distribution.sh calculate_db.py
-
-    - run: pip install -r .github/requirements.txt
-
-    - name: Download Distribution
-      run: |
-        cd .github
-        ./download_encc_distribution.py ..
-
-    - name: Commit Distribution
-      run: ./.github/commit_distribution.sh
-      
-    - name: Calculate & Push DB
-      run: |
-        set -euo pipefail
         git config --global user.email "theypsilon@gmail.com"
         git config --global user.name "The CI/CD Bot"
 
-        export DB_ID=distribution_mister
-        export DB_URL=https://raw.githubusercontent.com/MiSTer-DB9/Distribution_MiSTer/main/dbencc.json.zip
-        export BASE_FILES_URL=https://raw.githubusercontent.com/MiSTer-DB9/Distribution_MiSTer/%s/
-        export LATEST_ZIP_URL=https://github.com/MiSTer-DB9/Distribution_MiSTer/archive/refs/heads/main.zip
-        export ZIPS_CONFIG=./.github/zips_config.json
-        export LINUX_GITHUB_REPOSITORY=MiSTer-devel/SD-Installer-Win64_MiSTer
+    - name: Grab Dependencies
+      run: |
+        curl -o /tmp/zips_config.json "https://raw.githubusercontent.com/MiSTer-devel/Distribution_MiSTer/develop/.github/zips_config.json"
+        curl -o /tmp/db_operator.py "https://raw.githubusercontent.com/MiSTer-devel/Distribution_MiSTer/develop/.github/db_operator.py"
+        curl -o /tmp/test_database.sh "https://raw.githubusercontent.com/MiSTer-devel/Distribution_MiSTer/develop/.github/test_database.sh"
+        curl -o /tmp/push_database.sh "https://raw.githubusercontent.com/MiSTer-devel/Distribution_MiSTer/develop/.github/push_database.sh"
+        chmod +x /tmp/db_operator.py /tmp/test_database.sh /tmp/push_database.sh
 
-        ./.github/calculate_db.py
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - name: Download Distribution
+      run: ./.github/download_encc_distribution.py .
+
+    - name: Validate Distribution
+      run: |
+        FILES=$(find . -type f | wc -l)
+        echo "FILES: ${FILES}"
+        if (( ${FILES} < 13000 )) ; then
+          echo "Not enough files!"
+          exit 1
+        fi
+
+    - name: Commit Distribution
+      run: |
+        git checkout -f develop -b main
+        git add .
+        git commit -m "-"
+
+    - name: Build Database
+      run: /tmp/db_operator.py build .
+
+    - name: New Database Exists?
+      id: db_exists
+      run: if [ -f "${DB_JSON_NAME}" ] ; then echo "new_db=true" >> "${GITHUB_OUTPUT}" ; fi
+
+    - name: Test Database
+      if: steps.db_exists.outputs.new_db == 'true' 
+      run: /tmp/test_database.sh
+
+    - name: Push Database
+      if: steps.db_exists.outputs.new_db == 'true' 
+      run: /tmp/push_database.sh
