@@ -20,7 +20,8 @@ jobs:
       DB_URL: https://raw.githubusercontent.com/MiSTer-DB9/Distribution_MiSTer/main/dbencc.json.zip
       ZIPS_CONFIG: /tmp/zips_config.json
       LINUX_GITHUB_REPOSITORY: MiSTer-devel/SD-Installer-Win64_MiSTer
-      
+      BROKEN_MRAS_IGNORE: true
+
     steps:
     - name: Install apt-get utilities
       run: sudo apt-get install sharutils
