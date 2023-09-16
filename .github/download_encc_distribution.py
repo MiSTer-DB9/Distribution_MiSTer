@@ -82,6 +82,8 @@ def replace_urls(cores, extra_content_categories, forks):
             core['url'] = replacements[lower]
 
     for key in list(extra_content_categories):
+        if not isinstance(key, str):
+            continue
         lower = key.lower()
         if lower in replacements:
             print(f'Replaced extra content: {replacements[lower]} = {key}')
