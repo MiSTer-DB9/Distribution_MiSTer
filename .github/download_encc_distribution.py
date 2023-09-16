@@ -28,23 +28,23 @@ def main():
     forks = fetch_forks()
 
     print(f'Cores {len(cores)}:')
-    print(json.dumps(cores))
+    print(cores)
     print()
 
     download_distribution.validate_cores(cores)
 
     print(f'Extra Content URLs {len(extra_content_urls)}:')
-    print(json.dumps(extra_content_urls))
+    print(extra_content_urls)
     print()
 
     download_distribution.validate_extra_content_urls(extra_content_urls)
 
     print('Extra Content Categories:')
-    print(json.dumps(extra_content_categories))
+    print(extra_content_categories)
     print()
 
     print('Forks:')
-    print(json.dumps(forks))
+    print(forks)
     print()
 
     replace_urls(cores, extra_content_categories, forks)
