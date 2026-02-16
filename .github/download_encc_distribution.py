@@ -71,9 +71,11 @@ def fetch_forks():
 def replace_urls(cores, extra_content_categories, forks):
     replacements = {}
     for fork in forks['Forks']['syncing_forks'].split(' '):
+        main_branch = forks[fork]['main_branch']
         upstream_repo = str(Path(forks[fork]['upstream_repo']).with_suffix("")).replace('https:/g', 'https://g')
         fork_repo = str(Path(forks[fork]['fork_repo']).with_suffix("")).replace('https:/g', 'https://g')
         replacements[upstream_repo.lower()] = fork_repo
+        replacements[f"{upstream_repo}/tree/{main_branch}".lower()] = f"{fork_repo}/tree/{main_branch}"
 
     for core in cores:
         lower = core['url'].lower()
