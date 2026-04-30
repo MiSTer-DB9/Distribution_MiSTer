@@ -50,6 +50,8 @@ def main():
     print(forks)
     print()
 
+    inject_fork_only_cores(cores, forks)
+
     replace_urls(cores, extra_content_categories, forks)
 
     cores = filter_dead_cores(cores)
@@ -101,11 +103,49 @@ def fetch_forks():
                 forks[sec][key] = val
         return forks
 
+def inject_fork_only_cores(cores, forks):
+    # Synthesize cores-list entries for any [*_DB9] section that opts in via
+    # DISTRIBUTION_CATEGORY. Covers two cases that upstream Cores.md doesn't list:
+    #   (a) non-master branch of an upstream core (e.g. GBA accuracy)
+    #   (b) repos that exist only under MiSTer-DB9 (no upstream counterpart;
+    #       UPSTREAM_REPO empty)
+    # Synthesized URL points at the fork repo directly so replace_urls leaves
+    # it untouched.
+    existing = {c['url'].lower() for c in cores}
+    injected = 0
+    for fork in forks['Forks']['syncing_forks'].split(' '):
+        section = forks[fork]
+        category = section.get('distribution_category', '').strip()
+        if not category:
+            continue
+        main_branch = section['main_branch']
+        fork_repo = str(Path(section['fork_repo']).with_suffix("")).replace('https:/g', 'https://g')
+        url = f"{fork_repo}/tree/{main_branch}"
+        if url.lower() in existing or fork_repo.lower() in existing:
+            print(f"Skipping {fork} fork-only injection: URL already in cores list ({url})")
+            continue
+        release_name = section['release_core_name']
+        cores.append({
+            'name': section.get('distribution_name', release_name).strip() or release_name,
+            'url': url,
+            'home': section.get('distribution_home', release_name).strip() or release_name,
+            'comments': '',
+            'category': category,
+        })
+        existing.add(url.lower())
+        injected += 1
+        print(f"Injected fork-only core: {fork} → {url} (category={category})")
+    if injected:
+        print(f"Injected {injected} fork-only core(s).")
+
 def replace_urls(cores, extra_content_categories, forks):
     replacements = {}
     for fork in forks['Forks']['syncing_forks'].split(' '):
         main_branch = forks[fork]['main_branch']
-        upstream_repo = str(Path(forks[fork]['upstream_repo']).with_suffix("")).replace('https:/g', 'https://g')
+        upstream_raw = forks[fork].get('upstream_repo', '').strip()
+        if not upstream_raw:
+            continue
+        upstream_repo = str(Path(upstream_raw).with_suffix("")).replace('https:/g', 'https://g')
         fork_repo = str(Path(forks[fork]['fork_repo']).with_suffix("")).replace('https:/g', 'https://g')
         replacements[upstream_repo.lower()] = fork_repo
         replacements[f"{upstream_repo}/tree/{main_branch}".lower()] = f"{fork_repo}/tree/{main_branch}"
