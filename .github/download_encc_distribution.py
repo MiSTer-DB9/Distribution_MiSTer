@@ -6,7 +6,11 @@ import time
 import sys
 import shutil
 import io
+import os
 import sys
+import zipfile
+import tempfile
+import datetime
 import configparser
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
@@ -56,7 +60,10 @@ def main():
 
     cores = filter_dead_cores(cores)
 
-    download_distribution.process_all(extra_content_categories, cores, download_distribution.read_target_dir())
+    target_dir = download_distribution.read_target_dir()
+    download_distribution.process_all(extra_content_categories, cores, target_dir)
+
+    fetch_jotego_bundles(forks, target_dir)
 
     print()
     print("Time:")
@@ -164,6 +171,86 @@ def replace_urls(cores, extra_content_categories, forks):
             print(f'Replaced extra content: {replacements[lower]} = {key}')
             extra_content_categories[replacements[lower]] = extra_content_categories[key]
             del extra_content_categories[key]
+
+def fetch_jotego_bundles(forks, target_dir):
+    """For each Forks.ini section with IS_JOTEGO_BUNDLE = true, download the
+    GH release ZIP at RELEASE_URL and unpack it into the distribution:
+
+      release/mister/jt<core>.rbf  → <target>/_Arcade/cores/<core>_<YYYYMMDD>.rbf
+      release/mra/<game>.mra        → <target>/_Arcade/<game>.mra
+
+    The date stamp comes from the ZIP's HTTP Last-Modified header so reruns
+    are stable as long as the underlying release is unchanged. Bundles are
+    intentionally appended after process_all() so the upstream-driven
+    download stays the source of truth for non-jotego content; jotego
+    cores live alongside the MiSTer-devel arcade lineup, never replacing
+    a same-named upstream core (none exist).
+    """
+    target_dir = Path(target_dir)
+    arcade_dir = target_dir / '_Arcade'
+    cores_dir = arcade_dir / 'cores'
+    for fork_name, cfg in forks.items():
+        if cfg.get('is_jotego_bundle', '').strip().lower() != 'true':
+            continue
+        url = cfg.get('release_url', '').strip()
+        if not url:
+            print(f"::warning::{fork_name}: IS_JOTEGO_BUNDLE without RELEASE_URL — skipping")
+            continue
+        print(f"Fetching jotego bundle '{fork_name}' from {url}")
+        try:
+            resp = requests.get(url, timeout=600, stream=True, allow_redirects=True)
+            resp.raise_for_status()
+        except requests.RequestException as e:
+            print(f"::error::{fork_name}: failed to fetch {url}: {e}")
+            continue
+
+        date_stamp = datetime.datetime.now().strftime('%Y%m%d')
+        last_modified = resp.headers.get('Last-Modified', '')
+        if last_modified:
+            try:
+                date_stamp = datetime.datetime.strptime(
+                    last_modified, '%a, %d %b %Y %H:%M:%S %Z'
+                ).strftime('%Y%m%d')
+            except ValueError:
+                pass
+
+        with tempfile.NamedTemporaryFile(suffix='.zip', delete=False) as tmp:
+            for chunk in resp.iter_content(chunk_size=1024 * 1024):
+                if chunk:
+                    tmp.write(chunk)
+            zip_path = tmp.name
+
+        cores_dir.mkdir(parents=True, exist_ok=True)
+        arcade_dir.mkdir(parents=True, exist_ok=True)
+
+        rbfs = mras = 0
+        try:
+            with zipfile.ZipFile(zip_path) as zf:
+                for member in zf.namelist():
+                    if member.endswith('/'):
+                        continue
+                    name = Path(member).name
+                    parent = Path(member).parent.as_posix()
+                    if name.endswith('.rbf') and '/mister' in '/' + parent:
+                        out = cores_dir / f"{Path(name).stem}_{date_stamp}.rbf"
+                        with zf.open(member) as src, open(out, 'wb') as dst:
+                            shutil.copyfileobj(src, dst)
+                        rbfs += 1
+                    elif name.endswith('.mra'):
+                        out = arcade_dir / name
+                        with zf.open(member) as src, open(out, 'wb') as dst:
+                            shutil.copyfileobj(src, dst)
+                        mras += 1
+        finally:
+            try:
+                os.unlink(zip_path)
+            except OSError:
+                pass
+
+        if rbfs == 0:
+            print(f"::warning::{fork_name}: no jt*.rbf entries found under release/mister/ in bundle")
+        print(f"{fork_name}: extracted {rbfs} RBF(s), {mras} MRA(s) into {arcade_dir}")
+
 
 if __name__ == '__main__':
     main()
