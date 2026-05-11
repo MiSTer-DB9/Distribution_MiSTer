@@ -72,8 +72,16 @@ jobs:
       id: db_exists
       run: if [ -f "${DB_JSON_NAME}" ] ; then echo "new_db=true" >> "${GITHUB_OUTPUT}" ; fi
 
+    # [MiSTer-DB9 BEGIN] - rewrite tags on _Unstable/*.rbf entries so they
+    # carry only [unstable, unstable-<slug>]. Must run AFTER Build Database
+    # and BEFORE Test Database / Push Database.
+    - name: Inject Unstable Tags
+      if: steps.db_exists.outputs.new_db == 'true'
+      run: ./.github/inject_unstable_tags.py "${DB_JSON_NAME}"
+    # [MiSTer-DB9 END]
+
     - name: Test Database
-      if: steps.db_exists.outputs.new_db == 'true' 
+      if: steps.db_exists.outputs.new_db == 'true'
       run: /tmp/test_database.sh
 
     - name: Push Database

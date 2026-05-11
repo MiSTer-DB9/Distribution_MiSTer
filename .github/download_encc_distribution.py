@@ -2,6 +2,7 @@
 # Copyright (c) 2022 José Manuel Barroso Galindo <theypsilon@gmail.com>
 
 import json
+import re
 import time
 import sys
 import shutil
@@ -64,6 +65,18 @@ def main():
     download_distribution.process_all(extra_content_categories, cores, target_dir)
 
     fetch_jotego_bundles(forks, target_dir)
+
+    # [MiSTer-DB9 BEGIN] - unstable channel: download newest *_unstable_*.rbf
+    # from each UNSTABLE_FORKS entry's "unstable-builds" GitHub Release into
+    # target_dir/_Unstable/<flat filename>. Tag rewriting happens later via
+    # inject_unstable_tags.py after db_operator.py build.
+    inject_unstable_files(target_dir, forks)
+    # Forward the parsed Forks.ini to inject_unstable_tags.py so it does not
+    # re-fetch the same file mid-workflow (avoids a split-brain race if
+    # Forks.ini changes between the two scripts).
+    with open(UNSTABLE_FORKS_JSON_PATH, 'w') as f:
+        json.dump(forks, f)
+    # [MiSTer-DB9 END]
 
     print()
     print("Time:")
@@ -144,6 +157,97 @@ def inject_fork_only_cores(cores, forks):
         print(f"Injected fork-only core: {fork} → {url} (category={category})")
     if injected:
         print(f"Injected {injected} fork-only core(s).")
+
+# [MiSTer-DB9 BEGIN] - unstable channel file delivery (Hook 1).
+# Matches filenames produced by Forks_MiSTer/fork_ci_template/.github/unstable_release.sh.
+UNSTABLE_ASSET_RE = re.compile(r'^.*_unstable_\d{8}_\d{4}_[0-9a-f]{7}\.rbf$')
+UNSTABLE_TAG_NAME = 'unstable-builds'
+UNSTABLE_FORKS_JSON_PATH = '/tmp/unstable_forks.json'
+
+def _parse_fork_repo(url):
+    """Extract (owner, name) from FORK_REPO URL. Mirrors the regex used in
+    setup_cicd.sh / sync_unstable.sh."""
+    m = re.match(r'^(?:[a-zA-Z]+://)?github\.com(?::\d+)?/([a-zA-Z0-9_-]+)/([a-zA-Z0-9_-]+)(?:\.[a-zA-Z0-9]+)?$', url)
+    return (m.group(1), m.group(2)) if m else (None, None)
+
+def _fetch_one_unstable(fork_name, section, out_dir, headers):
+    owner, name = _parse_fork_repo(section.get('fork_repo', ''))
+    if not owner:
+        print(f"::warning::{fork_name}: malformed fork_repo — skipping")
+        return
+
+    rel_url = f'https://api.github.com/repos/{owner}/{name}/releases/tags/{UNSTABLE_TAG_NAME}'
+    try:
+        r = requests.get(rel_url, headers=headers, timeout=30)
+    except requests.RequestException as e:
+        print(f"::warning::{fork_name}: release lookup failed: {e}")
+        return
+    if r.status_code == 404:
+        print(f"{fork_name}: no '{UNSTABLE_TAG_NAME}' release yet — skipping (first build not run)")
+        return
+    if r.status_code != 200:
+        print(f"::warning::{fork_name}: release API returned {r.status_code} — skipping")
+        return
+
+    assets = r.json().get('assets', []) or []
+    candidates = [a for a in assets if UNSTABLE_ASSET_RE.match(a.get('name', ''))]
+    if not candidates:
+        print(f"::warning::{fork_name}: '{UNSTABLE_TAG_NAME}' has no *_unstable_*.rbf asset — skipping")
+        return
+    candidates.sort(key=lambda a: a.get('created_at', ''), reverse=True)
+    asset = candidates[0]
+
+    dl_url = asset.get('browser_download_url') or asset.get('url')
+    out_path = out_dir / asset['name']
+    try:
+        with requests.get(dl_url, headers=headers, stream=True, timeout=120) as dr:
+            dr.raise_for_status()
+            with open(out_path, 'wb') as fh:
+                for chunk in dr.iter_content(chunk_size=1024 * 1024):
+                    if chunk:
+                        fh.write(chunk)
+    except requests.RequestException as e:
+        print(f"::warning::{fork_name}: download failed for {asset['name']}: {e}")
+        try:
+            out_path.unlink()
+        except OSError:
+            pass
+        return
+    print(f"{fork_name}: fetched _Unstable/{asset['name']} ({asset.get('size','?')} bytes)")
+
+def inject_unstable_files(target_dir, forks):
+    """For each fork in Forks[UNSTABLE_FORKS], download the newest unstable
+    RBF asset into target_dir/_Unstable/<filename> in parallel. Flat folder
+    layout mirrors MiSTer-unstable-nightlies's _Unstable/ convention."""
+    raw = forks.get('Forks', {}).get('unstable_forks', '').strip()
+    if not raw:
+        print('UNSTABLE_FORKS empty — skipping unstable file injection.')
+        return
+    unstable_list = raw.split()
+    print(f"Unstable forks ({len(unstable_list)}): {unstable_list}")
+
+    out_dir = Path(target_dir) / '_Unstable'
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    token = os.environ.get('GITHUB_TOKEN', '').strip()
+    headers = {'Accept': 'application/vnd.github+json'}
+    if token:
+        headers['Authorization'] = f'token {token}'
+
+    tasks = []
+    for fork_name in unstable_list:
+        section = forks.get(fork_name)
+        if not section:
+            print(f"::warning::{fork_name}: section missing in Forks.ini — skipping")
+            continue
+        tasks.append((fork_name, section))
+
+    # Parallel fetch — matches the ThreadPoolExecutor pattern used by
+    # filter_dead_cores() above.
+    with ThreadPoolExecutor(max_workers=16) as ex:
+        list(ex.map(lambda t: _fetch_one_unstable(t[0], t[1], out_dir, headers), tasks))
+# [MiSTer-DB9 END]
+
 
 def replace_urls(cores, extra_content_categories, forks):
     replacements = {}
