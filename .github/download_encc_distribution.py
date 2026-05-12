@@ -66,6 +66,10 @@ def main():
 
     fetch_jotego_bundles(forks, target_dir)
 
+    # [MiSTer-DB9 BEGIN] - overlay v2 forks' stable-builds asset onto whatever
+    # process_all() pulled from the (possibly stale) legacy releases/ dir.
+    inject_stable_files(target_dir, forks)
+
     # [MiSTer-DB9 BEGIN] - unstable channel: download newest *_unstable_*.rbf
     # from each UNSTABLE_FORKS entry's "unstable-builds" GitHub Release into
     # target_dir/_Unstable/<flat filename>. Tag rewriting happens later via
@@ -182,9 +186,9 @@ def _fetch_one_unstable(fork_name, section, out_dir, headers):
         return
     # Multi-branch forks (GBA: master/GBA2P/accuracy, X68000: master/USERIO2)
     # share one `unstable-builds` release with one RBF per variant; filter
-    # by this variant's RELEASE_CORE_NAME prefix so each section picks its
-    # own newest asset instead of all sections collapsing to the single
-    # globally-newest RBF.
+    # by this variant's RELEASE_CORE_NAME prefix so each section sees only
+    # its own variant's RBFs instead of all sections collapsing onto the
+    # globally-newest assets.
     asset_prefix = f"{release_core_name}_unstable_"
 
     rel_url = f'https://api.github.com/repos/{owner}/{name}/releases/tags/{UNSTABLE_TAG_NAME}'
@@ -208,30 +212,68 @@ def _fetch_one_unstable(fork_name, section, out_dir, headers):
         print(f"::warning::{fork_name}: '{UNSTABLE_TAG_NAME}' has no {asset_prefix}*.rbf asset — skipping")
         return
     candidates.sort(key=lambda a: a.get('created_at', ''), reverse=True)
-    asset = candidates[0]
 
-    dl_url = asset.get('browser_download_url') or asset.get('url')
-    out_path = out_dir / asset['name']
-    try:
-        with requests.get(dl_url, headers=headers, stream=True, timeout=120) as dr:
-            dr.raise_for_status()
-            with open(out_path, 'wb') as fh:
-                for chunk in dr.iter_content(chunk_size=1024 * 1024):
-                    if chunk:
-                        fh.write(chunk)
-    except requests.RequestException as e:
-        print(f"::warning::{fork_name}: download failed for {asset['name']}: {e}")
+    # Per-variant subdir under _Unstable/ — RELEASE_CORE_NAME is unique
+    # across Forks.ini (collision would already break fork-side asset
+    # naming), so this is a safe key. Leading underscore matches MiSTer
+    # convention for utility dirs that sort to the top of file listings.
+    variant_dir = out_dir / f"_{release_core_name}"
+    variant_dir.mkdir(parents=True, exist_ok=True)
+
+    keep = set()
+    fetched = skipped = 0
+    for asset in candidates:
+        keep.add(asset['name'])
+        out_path = variant_dir / asset['name']
+        # Skip re-download if the file is already in place with the same
+        # byte size. RBF names embed timestamp+sha7, so identical name +
+        # size = identical content; spares the GitHub raw-content bandwidth
+        # on every distribution rebuild.
+        expected_size = asset.get('size')
+        if (out_path.exists() and expected_size is not None
+                and out_path.stat().st_size == expected_size):
+            skipped += 1
+            continue
+        dl_url = asset.get('browser_download_url') or asset.get('url')
         try:
-            out_path.unlink()
-        except OSError:
-            pass
-        return
-    print(f"{fork_name}: fetched _Unstable/{asset['name']} ({asset.get('size','?')} bytes)")
+            with requests.get(dl_url, headers=headers, stream=True, timeout=120) as dr:
+                dr.raise_for_status()
+                with open(out_path, 'wb') as fh:
+                    for chunk in dr.iter_content(chunk_size=1024 * 1024):
+                        if chunk:
+                            fh.write(chunk)
+        except requests.RequestException as e:
+            print(f"::warning::{fork_name}: download failed for {asset['name']}: {e}")
+            try:
+                out_path.unlink()
+            except OSError:
+                pass
+            keep.discard(asset['name'])
+            continue
+        fetched += 1
+        print(f"{fork_name}: fetched _Unstable/_{release_core_name}/{asset['name']} ({asset.get('size','?')} bytes)")
+
+    # Sweep stale RBFs in this variant's subdir — anything no longer in
+    # the fork's Release (pruned by unstable_release.sh's RETENTION cap)
+    # gets dropped from the distribution too. Scope is one subdir per call
+    # so a misconfigured fork can't cause cross-core deletions.
+    deleted = 0
+    for stale in variant_dir.glob('*.rbf'):
+        if stale.name not in keep:
+            try:
+                stale.unlink()
+                deleted += 1
+                print(f"{fork_name}: pruned _Unstable/_{release_core_name}/{stale.name} (not in current Release set)")
+            except OSError as e:
+                print(f"::warning::{fork_name}: failed to prune {stale.name}: {e}")
+    print(f"{fork_name}: _Unstable/_{release_core_name}/ — fetched={fetched} skipped={skipped} deleted={deleted} kept={len(keep)}")
 
 def inject_unstable_files(target_dir, forks):
-    """For each fork in Forks[UNSTABLE_FORKS], download the newest unstable
-    RBF asset into target_dir/_Unstable/<filename> in parallel. Flat folder
-    layout mirrors MiSTer-unstable-nightlies's _Unstable/ convention."""
+    """For each fork in Forks[UNSTABLE_FORKS], mirror the fork's
+    `unstable-builds` Release into target_dir/_Unstable/_<RELEASE_CORE_NAME>/
+    in parallel — every retained RBF (fork-side RETENTION=7) lands on the
+    SD card so users have a local rollback set without browsing GitHub.
+    Stale RBFs in each variant's subdir are pruned to track Release state."""
     raw = forks.get('Forks', {}).get('unstable_forks', '').strip()
     if not raw:
         print('UNSTABLE_FORKS empty — skipping unstable file injection.')
@@ -259,6 +301,119 @@ def inject_unstable_files(target_dir, forks):
     # filter_dead_cores() above.
     with ThreadPoolExecutor(max_workers=16) as ex:
         list(ex.map(lambda t: _fetch_one_unstable(t[0], t[1], out_dir, headers), tasks))
+# [MiSTer-DB9 END]
+
+
+# [MiSTer-DB9 BEGIN] - stable channel file delivery (companion to inject_unstable_files).
+STABLE_TAG_NAME = 'stable-builds'
+STABLE_ASSET_RE_TAIL = re.compile(r'_\d{8}(?:\.[A-Za-z0-9]+)?$')
+
+def _build_category_index(target_dir):
+    """One-shot scan of target_dir, keyed by '<core>_YYYYMMDD'-shaped basenames.
+    Replaces a per-fork rglob; at ~140 forks × ~5k tree entries this is the
+    difference between O(forks × tree) and O(tree)."""
+    index = {}
+    for p in Path(target_dir).rglob('*'):
+        if not p.is_file():
+            continue
+        name = p.name
+        m = STABLE_ASSET_RE_TAIL.search(name)
+        if not m:
+            continue
+        core = name[:m.start()]
+        index.setdefault(core, []).append(p)
+    return index
+
+def _fetch_one_stable(fork_name, section, category_index, headers):
+    owner, name = _parse_fork_repo(section.get('fork_repo', ''))
+    if not owner:
+        print(f"::warning::{fork_name}: malformed fork_repo — skipping stable-builds")
+        return
+
+    release_core_name = section.get('release_core_name', '').strip()
+    if not release_core_name:
+        print(f"::warning::{fork_name}: missing release_core_name — skipping stable-builds")
+        return
+    asset_re = re.compile(rf'^{re.escape(release_core_name)}_\d{{8}}(?:\.[A-Za-z0-9]+)?$')
+
+    rel_url = f'https://api.github.com/repos/{owner}/{name}/releases/tags/{STABLE_TAG_NAME}'
+    try:
+        r = requests.get(rel_url, headers=headers, timeout=30)
+    except requests.RequestException as e:
+        print(f"::warning::{fork_name}: stable release lookup failed: {e}")
+        return
+    if r.status_code == 404:
+        print(f"{fork_name}: no '{STABLE_TAG_NAME}' release yet — leaving process_all output in place")
+        return
+    if r.status_code != 200:
+        print(f"::warning::{fork_name}: stable release API returned {r.status_code} — skipping")
+        return
+
+    assets = r.json().get('assets', []) or []
+    candidates = sorted(
+        (a for a in assets if asset_re.match(a.get('name', ''))),
+        key=lambda a: a.get('name', ''), reverse=True,
+    )
+    if not candidates:
+        print(f"::warning::{fork_name}: '{STABLE_TAG_NAME}' has no {release_core_name}_YYYYMMDD.* asset — skipping")
+        return
+    asset = candidates[0]
+
+    existing = category_index.get(release_core_name) or []
+    if not existing:
+        print(f"::warning::{fork_name}: process_all did not place any {release_core_name}_*.* — cannot infer category dir; skipping")
+        return
+    category_dir = existing[0].parent
+    for old in existing:
+        if old.parent == category_dir:
+            try:
+                old.unlink()
+            except OSError:
+                pass
+
+    out_path = category_dir / asset['name']
+    dl_url = asset.get('browser_download_url') or asset.get('url')
+    try:
+        with requests.get(dl_url, headers=headers, stream=True, timeout=120) as dr:
+            dr.raise_for_status()
+            with open(out_path, 'wb') as fh:
+                for chunk in dr.iter_content(chunk_size=1024 * 1024):
+                    if chunk:
+                        fh.write(chunk)
+    except requests.RequestException as e:
+        print(f"::warning::{fork_name}: stable download failed for {asset['name']}: {e}")
+        try:
+            out_path.unlink()
+        except OSError:
+            pass
+        return
+    print(f"{fork_name}: replaced {category_dir.name}/{asset['name']} from {STABLE_TAG_NAME} ({asset.get('size','?')} bytes)")
+
+def inject_stable_files(target_dir, forks):
+    raw = forks.get('Forks', {}).get('release_v2_forks', '').strip()
+    if not raw:
+        print('RELEASE_V2_FORKS empty — skipping stable file injection.')
+        return
+    v2_list = raw.split()
+    print(f"Release-v2 forks ({len(v2_list)}): {v2_list}")
+
+    token = os.environ.get('GITHUB_TOKEN', '').strip()
+    headers = {'Accept': 'application/vnd.github+json'}
+    if token:
+        headers['Authorization'] = f'token {token}'
+
+    category_index = _build_category_index(target_dir)
+
+    tasks = []
+    for fork_name in v2_list:
+        section = forks.get(fork_name)
+        if not section:
+            print(f"::warning::{fork_name}: section missing in Forks.ini — skipping")
+            continue
+        tasks.append((fork_name, section))
+
+    with ThreadPoolExecutor(max_workers=16) as ex:
+        list(ex.map(lambda t: _fetch_one_stable(t[0], t[1], category_index, headers), tasks))
 # [MiSTer-DB9 END]
 
 
