@@ -2,11 +2,12 @@
 # [MiSTer-DB9 BEGIN] - unstable channel tag rewrite (Hook 2).
 #
 # Runs AFTER db_operator.py build emits dbencc.json. Walks every file entry
-# whose path matches `_Unstable/.*_unstable_<ts>_<sha>.rbf`, overwrites its
-# `tags` array with EXACTLY ['unstable', 'unstable-<slug>'], and extends the
-# tag_dictionary. Path-derived tags db_operator may have added are dropped
-# deliberately so `filter = console` does not pull in unstable consoles —
-# opt-in to unstable is via explicit `unstable*` tokens only.
+# whose path matches `_Unstable/_<CoreDir>/.*_unstable_<ts>_<sha>.rbf` (per-
+# variant subdir layout mirroring the fork's `unstable-builds` Release),
+# overwrites its `tags` array with EXACTLY ['unstable', 'unstable-<slug>'],
+# and extends the tag_dictionary. Path-derived tags db_operator may have
+# added are dropped deliberately so `filter = console` does not pull in
+# unstable consoles — opt-in is via explicit `unstable*` tokens only.
 
 import io
 import json
@@ -16,7 +17,7 @@ import sys
 import configparser
 
 UNSTABLE_ASSET_RE = re.compile(r'^(?P<core>.+?)_unstable_\d{8}_\d{4}_[0-9a-f]{7}\.rbf$')
-UNSTABLE_PATH_RE = re.compile(r'^_Unstable/(?P<filename>[^/]+)$')
+UNSTABLE_PATH_RE = re.compile(r'^_Unstable/_[^/]+/(?P<filename>[^/]+)$')
 
 # Side channel from download_encc_distribution.py — set by the Hook 1 step so
 # Hook 2 doesn't re-fetch Forks.ini over the network.
