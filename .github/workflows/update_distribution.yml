@@ -86,6 +86,16 @@ jobs:
       run: ./.github/inject_unstable_tags.py "${DB_JSON_NAME}"
     # [MiSTer-DB9 END]
 
+    # [MiSTer-DB9 BEGIN] - per-fork DISTRIBUTION_FILTERS tag rewrite: entries
+    # belonging to RELEASE_V2_FORKS sections that declare the field have their
+    # tags replaced with exactly the listed tokens (e.g. PSX_DS / Saturn_DS
+    # opt-in via `dualsdram`). Must run AFTER Build Database and AFTER Inject
+    # Unstable Tags (whose _Unstable/ invariant must already be satisfied).
+    - name: Inject Distribution Filters
+      if: steps.db_exists.outputs.new_db == 'true'
+      run: ./.github/inject_distribution_filters.py "${DB_JSON_NAME}"
+    # [MiSTer-DB9 END]
+
     - name: Test Database
       if: steps.db_exists.outputs.new_db == 'true'
       run: /tmp/test_database.sh
