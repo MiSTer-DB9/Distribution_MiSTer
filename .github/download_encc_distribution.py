@@ -176,6 +176,17 @@ def _fetch_one_unstable(fork_name, section, out_dir, headers):
         print(f"::warning::{fork_name}: malformed fork_repo — skipping")
         return
 
+    release_core_name = section.get('release_core_name', '').strip()
+    if not release_core_name:
+        print(f"::warning::{fork_name}: missing release_core_name — skipping")
+        return
+    # Multi-branch forks (GBA: master/GBA2P/accuracy, X68000: master/USERIO2)
+    # share one `unstable-builds` release with one RBF per variant; filter
+    # by this variant's RELEASE_CORE_NAME prefix so each section picks its
+    # own newest asset instead of all sections collapsing to the single
+    # globally-newest RBF.
+    asset_prefix = f"{release_core_name}_unstable_"
+
     rel_url = f'https://api.github.com/repos/{owner}/{name}/releases/tags/{UNSTABLE_TAG_NAME}'
     try:
         r = requests.get(rel_url, headers=headers, timeout=30)
@@ -190,9 +201,11 @@ def _fetch_one_unstable(fork_name, section, out_dir, headers):
         return
 
     assets = r.json().get('assets', []) or []
-    candidates = [a for a in assets if UNSTABLE_ASSET_RE.match(a.get('name', ''))]
+    candidates = [a for a in assets
+                  if a.get('name', '').startswith(asset_prefix)
+                  and UNSTABLE_ASSET_RE.match(a.get('name', ''))]
     if not candidates:
-        print(f"::warning::{fork_name}: '{UNSTABLE_TAG_NAME}' has no *_unstable_*.rbf asset — skipping")
+        print(f"::warning::{fork_name}: '{UNSTABLE_TAG_NAME}' has no {asset_prefix}*.rbf asset — skipping")
         return
     candidates.sort(key=lambda a: a.get('created_at', ''), reverse=True)
     asset = candidates[0]
