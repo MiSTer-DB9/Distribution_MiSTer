@@ -21,6 +21,12 @@ jobs:
       ZIPS_CONFIG: /tmp/zips_config.json
       LINUX_GITHUB_REPOSITORY: MiSTer-devel/SD-Installer-Win64_MiSTer
       BROKEN_MRAS_IGNORE: true
+      # [MiSTer-DB9 BEGIN] - ship Dual SDRAM RBFs (PSX_DS, Saturn_DS) in main dbencc
+      # upstream db_operator.py defaults to omitting *_dualsdram_*/*_ds_* RBFs
+      # because MiSTer-devel publishes them in a separate side DB; this fork
+      # serves them through the same dbencc.json.
+      OMIT_DUAL_SDRAM_CORES: 'false'
+      # [MiSTer-DB9 END]
 
     steps:
     - name: Install apt-get utilities
