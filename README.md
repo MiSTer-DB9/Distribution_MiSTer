@@ -16,9 +16,15 @@ For downloading all of these files in an automatic fashion, use [this tool](http
 
 ALL_TAGS_GO_HERE
 
+### Stable builds
+
+For each fork enrolled in the stable channel, the distribution overlays per-core stable RBFs straight from each fork repo's GitHub Releases page on top of whatever the upstream MiSTer-devel pass placed in the category dir. Stable releases use the canonical GitHub model: **one annotated tag per build commit, one Release per tag** — not a single rolling tag with a stack of historical assets crammed inside. Tag format is `stable/<MAIN_BRANCH>/<YYYYMMDD>-<sha7>` (e.g. `stable/master/20260512-abc1234`); per-variant prefix means multi-variant forks like GBA (master / GBA2P / accuracy) and X68000 (master / USERIO2) each get an independent latest pointer. The downloader fetches `/repos/<owner>/<repo>/releases?per_page=30`, filters by tag prefix for the section's `MAIN_BRANCH`, picks the newest by `created_at`, and downloads its single RBF asset (`<Core>_<YYYYMMDD>_<sha7>.<ext>`) into the same category dir upstream would have used. Stable files inherit upstream's tag set — `filter = console` keeps working as expected.
+
+To browse the history of any stable build for a given core, open the fork repo's Releases page (e.g. `https://github.com/MiSTer-DB9/NES_MiSTer/releases`); the most-recent 30 stable builds per branch are retained, older releases are auto-pruned with their tags.
+
 ### Unstable builds
 
-Alongside the regular (stable) RBFs, the distribution can ship per-core **unstable** builds compiled from upstream MiSTer-devel HEAD with DB9 / SNAC / Saturn-key-gate patches applied on top. Unstable files land in a separate top-level folder, `_Unstable/`, and each is named `<Core>_unstable_<YYYYMMDD>_<HHMM>_<sha7>.rbf`. The last 7 builds per core are kept as GitHub Release assets on each fork repo (tag `unstable-builds`) for manual rollback if a fresh build regresses.
+Alongside the regular (stable) RBFs, the distribution can ship per-core **unstable** builds compiled from upstream MiSTer-devel HEAD with DB9 / SNAC / Saturn-key-gate patches applied on top. Unstable files land in a separate top-level folder, `_Unstable/`, with one subdir per core variant: `_Unstable/_<Core>/<Core>_unstable_<YYYYMMDD>_<HHMM>_<sha7>.rbf` (e.g. `_Unstable/_NES/NES_unstable_20260512_0211_14ed3d5.rbf`, `_Unstable/_GBA2P/GBA2P_unstable_...rbf`). The last 7 builds per core are mirrored from each fork repo's `unstable-builds` GitHub Release straight onto the SD card, so rollback after a bad build is a one-step local file swap — no GitHub browsing required.
 
 Unstable files carry **only** two tags: `unstable` (channel) and `unstable-<core_slug>` (per-fork). They deliberately do NOT inherit `console` / `computer` / `<core>` path tags, so a generic `filter = console` does not silently pull them in.
 
@@ -41,4 +47,4 @@ filter = !unstable unstable-ataristuserio2     # the AtariST USERIO2 variant
 filter = console !unstable
 ```
 
-**Rolling back a bad unstable RBF.** Open the affected fork's repo on GitHub (e.g. `https://github.com/MiSTer-DB9/Saturn_MiSTer`), click *Releases* → the `unstable-builds` prerelease, and download an older asset (last 7 builds are kept). Drop it manually into your SD card's `_Unstable/` folder, then add `!unstable-<slug>` to `filter` to stop the downloader from upgrading it on the next run.
+**Rolling back a bad unstable RBF.** The last 7 builds for each core are already on your SD card under `_Unstable/_<Core>/` — pick the one you want from the OSD, or delete the newest file in that subdir and load whichever older RBF you prefer. To keep the downloader from re-fetching what you removed on its next run, add `!unstable-<slug>` to your `filter`; the matching subdir will then stop being mirrored. As a deeper-history fallback, each fork's `unstable-builds` GitHub Release (e.g. `https://github.com/MiSTer-DB9/Saturn_MiSTer/releases/tag/unstable-builds`) holds the same set of assets.

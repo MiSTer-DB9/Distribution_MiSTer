@@ -174,6 +174,26 @@ def _parse_fork_repo(url):
     m = re.match(r'^(?:[a-zA-Z]+://)?github\.com(?::\d+)?/([a-zA-Z0-9_-]+)/([a-zA-Z0-9_-]+)(?:\.[a-zA-Z0-9]+)?$', url)
     return (m.group(1), m.group(2)) if m else (None, None)
 
+def _download_asset(asset, out_path, headers, fork_name):
+    """Stream `asset` to `out_path` with chunked writes. Unlinks the partial
+    file on RequestException and returns False; True on success."""
+    dl_url = asset.get('browser_download_url') or asset.get('url')
+    try:
+        with requests.get(dl_url, headers=headers, stream=True, timeout=120) as dr:
+            dr.raise_for_status()
+            with open(out_path, 'wb') as fh:
+                for chunk in dr.iter_content(chunk_size=1024 * 1024):
+                    if chunk:
+                        fh.write(chunk)
+    except requests.RequestException as e:
+        print(f"::warning::{fork_name}: download failed for {asset['name']}: {e}")
+        try:
+            out_path.unlink()
+        except OSError:
+            pass
+        return False
+    return True
+
 def _fetch_one_unstable(fork_name, section, out_dir, headers):
     owner, name = _parse_fork_repo(section.get('fork_repo', ''))
     if not owner:
@@ -234,20 +254,7 @@ def _fetch_one_unstable(fork_name, section, out_dir, headers):
                 and out_path.stat().st_size == expected_size):
             skipped += 1
             continue
-        dl_url = asset.get('browser_download_url') or asset.get('url')
-        try:
-            with requests.get(dl_url, headers=headers, stream=True, timeout=120) as dr:
-                dr.raise_for_status()
-                with open(out_path, 'wb') as fh:
-                    for chunk in dr.iter_content(chunk_size=1024 * 1024):
-                        if chunk:
-                            fh.write(chunk)
-        except requests.RequestException as e:
-            print(f"::warning::{fork_name}: download failed for {asset['name']}: {e}")
-            try:
-                out_path.unlink()
-            except OSError:
-                pass
+        if not _download_asset(asset, out_path, headers, fork_name):
             keep.discard(asset['name'])
             continue
         fetched += 1
@@ -305,11 +312,14 @@ def inject_unstable_files(target_dir, forks):
 
 
 # [MiSTer-DB9 BEGIN] - stable channel file delivery (companion to inject_unstable_files).
-STABLE_TAG_NAME = 'stable-builds'
-STABLE_ASSET_RE_TAIL = re.compile(r'_\d{8}(?:\.[A-Za-z0-9]+)?$')
+# Each variant publishes per-commit immutable tags `stable/<MAIN_BRANCH>/<YYYYMMDD>-<sha7>`,
+# one GitHub Release per tag. Matches both the new `<Core>_<YYYYMMDD>_<sha7>.<ext>`
+# form and the pre-rework legacy `<Core>_<YYYYMMDD>.<ext>` so any stale legacy
+# file in the SD-card category dir gets replaced on overlay.
+STABLE_ASSET_RE_TAIL = re.compile(r'_\d{8}(?:_[0-9a-f]{7})?(?:\.[A-Za-z0-9]+)?$')
 
 def _build_category_index(target_dir):
-    """One-shot scan of target_dir, keyed by '<core>_YYYYMMDD'-shaped basenames.
+    """One-shot scan of target_dir, keyed by '<core>_YYYYMMDD[_<sha7>]'-shaped basenames.
     Replaces a per-fork rglob; at ~140 forks × ~5k tree entries this is the
     difference between O(forks × tree) and O(tree)."""
     index = {}
@@ -327,35 +337,45 @@ def _build_category_index(target_dir):
 def _fetch_one_stable(fork_name, section, category_index, headers):
     owner, name = _parse_fork_repo(section.get('fork_repo', ''))
     if not owner:
-        print(f"::warning::{fork_name}: malformed fork_repo — skipping stable-builds")
+        print(f"::warning::{fork_name}: malformed fork_repo — skipping stable")
         return
 
     release_core_name = section.get('release_core_name', '').strip()
     if not release_core_name:
-        print(f"::warning::{fork_name}: missing release_core_name — skipping stable-builds")
+        print(f"::warning::{fork_name}: missing release_core_name — skipping stable")
         return
-    asset_re = re.compile(rf'^{re.escape(release_core_name)}_\d{{8}}(?:\.[A-Za-z0-9]+)?$')
+    main_branch = section.get('main_branch', '').strip()
+    if not main_branch:
+        print(f"::warning::{fork_name}: missing main_branch — skipping stable")
+        return
 
-    rel_url = f'https://api.github.com/repos/{owner}/{name}/releases/tags/{STABLE_TAG_NAME}'
+    tag_prefix = f'stable/{main_branch}/'
+    asset_re = re.compile(rf'^{re.escape(release_core_name)}_\d{{8}}_[0-9a-f]{{7}}(?:\.[A-Za-z0-9]+)?$')
+
+    list_url = f'https://api.github.com/repos/{owner}/{name}/releases?per_page=100'
     try:
-        r = requests.get(rel_url, headers=headers, timeout=30)
+        r = requests.get(list_url, headers=headers, timeout=30)
     except requests.RequestException as e:
-        print(f"::warning::{fork_name}: stable release lookup failed: {e}")
-        return
-    if r.status_code == 404:
-        print(f"{fork_name}: no '{STABLE_TAG_NAME}' release yet — leaving process_all output in place")
+        print(f"::warning::{fork_name}: stable release listing failed: {e}")
         return
     if r.status_code != 200:
-        print(f"::warning::{fork_name}: stable release API returned {r.status_code} — skipping")
+        print(f"::warning::{fork_name}: releases API returned {r.status_code} — skipping stable")
         return
 
-    assets = r.json().get('assets', []) or []
-    candidates = sorted(
-        (a for a in assets if asset_re.match(a.get('name', ''))),
-        key=lambda a: a.get('name', ''), reverse=True,
-    )
+    matches = [rel for rel in r.json()
+               if isinstance(rel, dict)
+               and rel.get('tag_name', '').startswith(tag_prefix)]
+    if not matches:
+        print(f"{fork_name}: no '{tag_prefix}*' release yet — leaving process_all output in place")
+        return
+    matches.sort(key=lambda rel: rel.get('created_at', ''), reverse=True)
+    release = matches[0]
+    release_tag = release.get('tag_name', '?')
+
+    assets = release.get('assets', []) or []
+    candidates = [a for a in assets if asset_re.match(a.get('name', ''))]
     if not candidates:
-        print(f"::warning::{fork_name}: '{STABLE_TAG_NAME}' has no {release_core_name}_YYYYMMDD.* asset — skipping")
+        print(f"::warning::{fork_name}: release {release_tag} has no {release_core_name}_YYYYMMDD_<sha7>.* asset — skipping")
         return
     asset = candidates[0]
 
@@ -372,22 +392,9 @@ def _fetch_one_stable(fork_name, section, category_index, headers):
                 pass
 
     out_path = category_dir / asset['name']
-    dl_url = asset.get('browser_download_url') or asset.get('url')
-    try:
-        with requests.get(dl_url, headers=headers, stream=True, timeout=120) as dr:
-            dr.raise_for_status()
-            with open(out_path, 'wb') as fh:
-                for chunk in dr.iter_content(chunk_size=1024 * 1024):
-                    if chunk:
-                        fh.write(chunk)
-    except requests.RequestException as e:
-        print(f"::warning::{fork_name}: stable download failed for {asset['name']}: {e}")
-        try:
-            out_path.unlink()
-        except OSError:
-            pass
+    if not _download_asset(asset, out_path, headers, fork_name):
         return
-    print(f"{fork_name}: replaced {category_dir.name}/{asset['name']} from {STABLE_TAG_NAME} ({asset.get('size','?')} bytes)")
+    print(f"{fork_name}: replaced {category_dir.name}/{asset['name']} from {release_tag} ({asset.get('size','?')} bytes)")
 
 def inject_stable_files(target_dir, forks):
     raw = forks.get('Forks', {}).get('release_v2_forks', '').strip()
