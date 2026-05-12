@@ -135,7 +135,12 @@ def inject_fork_only_cores(cores, forks):
     #       UPSTREAM_REPO empty)
     # Synthesized URL points at the fork repo directly so replace_urls leaves
     # it untouched.
-    existing = {c['url'].lower() for c in cores}
+    # Dedup keyed on (url, release_core_name): variants that share a fork_repo
+    # + main_branch (e.g. Saturn / Saturn_DualSDRAM, both in MiSTer-DB9/Saturn_MiSTer
+    # on `main`) get distinct cores entries because their release_core_name differs.
+    # The url-only short-circuit (`fork_repo.lower() in existing`) is dropped so
+    # a fork-only variant can ride alongside an already-replaced upstream entry.
+    existing_keys = {(c['url'].lower(), c.get('name', '').lower()) for c in cores}
     injected = 0
     for fork in forks['Forks']['syncing_forks'].split(' '):
         section = forks[fork]
@@ -145,20 +150,22 @@ def inject_fork_only_cores(cores, forks):
         main_branch = section['main_branch']
         fork_repo = str(Path(section['fork_repo']).with_suffix("")).replace('https:/g', 'https://g')
         url = f"{fork_repo}/tree/{main_branch}"
-        if url.lower() in existing or fork_repo.lower() in existing:
-            print(f"Skipping {fork} fork-only injection: URL already in cores list ({url})")
-            continue
         release_name = section['release_core_name']
+        display_name = section.get('distribution_name', release_name).strip() or release_name
+        key = (url.lower(), display_name.lower())
+        if key in existing_keys:
+            print(f"Skipping {fork} fork-only injection: (url,name) already in cores list ({url}, {display_name})")
+            continue
         cores.append({
-            'name': section.get('distribution_name', release_name).strip() or release_name,
+            'name': display_name,
             'url': url,
             'home': section.get('distribution_home', release_name).strip() or release_name,
             'comments': '',
             'category': category,
         })
-        existing.add(url.lower())
+        existing_keys.add(key)
         injected += 1
-        print(f"Injected fork-only core: {fork} → {url} (category={category})")
+        print(f"Injected fork-only core: {fork} → {url} as '{display_name}' (category={category})")
     if injected:
         print(f"Injected {injected} fork-only core(s).")
 
@@ -334,7 +341,7 @@ def _build_category_index(target_dir):
         index.setdefault(core, []).append(p)
     return index
 
-def _fetch_one_stable(fork_name, section, category_index, headers):
+def _fetch_one_stable(fork_name, section, category_index, headers, target_dir):
     owner, name = _parse_fork_repo(section.get('fork_repo', ''))
     if not owner:
         print(f"::warning::{fork_name}: malformed fork_repo — skipping stable")
@@ -379,17 +386,26 @@ def _fetch_one_stable(fork_name, section, category_index, headers):
         return
     asset = candidates[0]
 
+    # Fork-only variants (e.g. Saturn_DualSDRAM) set DISTRIBUTION_CATEGORY in
+    # Forks.ini. Use it directly for placement so v2 stable does not depend on
+    # upstream `process_all` having dropped a sibling RBF for category inference.
+    explicit_category = section.get('distribution_category', '').strip()
     existing = category_index.get(release_core_name) or []
-    if not existing:
-        print(f"::warning::{fork_name}: process_all did not place any {release_core_name}_*.* — cannot infer category dir; skipping")
+    if existing:
+        category_dir = existing[0].parent
+        for old in existing:
+            if old.parent == category_dir:
+                try:
+                    old.unlink()
+                except OSError:
+                    pass
+    elif explicit_category:
+        category_dir = Path(target_dir) / explicit_category
+        category_dir.mkdir(parents=True, exist_ok=True)
+        print(f"{fork_name}: no process_all placement for {release_core_name}_*.* — using DISTRIBUTION_CATEGORY={explicit_category}")
+    else:
+        print(f"::warning::{fork_name}: process_all did not place any {release_core_name}_*.* and no DISTRIBUTION_CATEGORY set — skipping")
         return
-    category_dir = existing[0].parent
-    for old in existing:
-        if old.parent == category_dir:
-            try:
-                old.unlink()
-            except OSError:
-                pass
 
     out_path = category_dir / asset['name']
     if not _download_asset(asset, out_path, headers, fork_name):
@@ -420,7 +436,7 @@ def inject_stable_files(target_dir, forks):
         tasks.append((fork_name, section))
 
     with ThreadPoolExecutor(max_workers=16) as ex:
-        list(ex.map(lambda t: _fetch_one_stable(t[0], t[1], category_index, headers), tasks))
+        list(ex.map(lambda t: _fetch_one_stable(t[0], t[1], category_index, headers, target_dir), tasks))
 # [MiSTer-DB9 END]
 
 
