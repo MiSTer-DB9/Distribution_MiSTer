@@ -362,6 +362,12 @@ def _fetch_one_stable(fork_name, section, category_index, headers, target_dir):
         print(f"::warning::{fork_name}: missing main_branch — skipping stable")
         return
 
+    # Mirror upstream `install_arcade_core()` (download_distribution.py:378
+    # `latest_release.replace("Arcade-", "")`): arcade RBFs land on SD
+    # without the `Arcade-` repo-name prefix, so both the category-index
+    # lookup and the on-SD filename must use the stripped form.
+    sd_core_name = release_core_name[len('Arcade-'):] if release_core_name.startswith('Arcade-') else release_core_name
+
     tag_prefix = f'stable/{main_branch}/'
     asset_re = re.compile(rf'^{re.escape(release_core_name)}_\d{{8}}_[0-9a-f]{{7}}(?:\.[A-Za-z0-9]+)?$')
 
@@ -415,7 +421,7 @@ def _fetch_one_stable(fork_name, section, category_index, headers, target_dir):
     #     overlay placement here. Kept for backward compat.
     explicit_category = (section.get('distribution_overlay_dir', '').strip()
                         or section.get('distribution_category', '').strip())
-    existing = category_index.get(release_core_name) or []
+    existing = category_index.get(sd_core_name) or []
     if existing:
         category_dir = existing[0].parent
         for old in existing:
@@ -427,9 +433,9 @@ def _fetch_one_stable(fork_name, section, category_index, headers, target_dir):
     elif explicit_category:
         category_dir = Path(target_dir) / explicit_category
         category_dir.mkdir(parents=True, exist_ok=True)
-        print(f"{fork_name}: no process_all placement for {release_core_name}_*.* — using overlay dir '{explicit_category}'")
+        print(f"{fork_name}: no process_all placement for {sd_core_name}_*.* (release {release_core_name}) — using overlay dir '{explicit_category}'")
     else:
-        print(f"::warning::{fork_name}: process_all did not place any {release_core_name}_*.* and no DISTRIBUTION_OVERLAY_DIR / DISTRIBUTION_CATEGORY set — skipping")
+        print(f"::warning::{fork_name}: process_all did not place any {sd_core_name}_*.* (release {release_core_name}) and no DISTRIBUTION_OVERLAY_DIR / DISTRIBUTION_CATEGORY set — skipping")
         return
 
     # DISTRIBUTION_FILENAME override: write asset under a fixed on-SD name
@@ -438,7 +444,12 @@ def _fetch_one_stable(fork_name, section, category_index, headers, target_dir):
     # and avoiding `MiSTer_<date>_<sha7>` accumulating next to bare `MiSTer`
     # that `process_all` already placed there). The dated/sha-stamped name
     # remains visible on the GitHub Release for provenance.
-    rename_to = section.get('distribution_filename', '').strip() or asset['name']
+    # Default on-SD filename uses `sd_core_name` so arcade overlays land
+    # as `<Game>_<date>_<sha7>.<ext>` to match upstream's prefix-stripped
+    # placement (asset_re at the top guarantees `asset['name']` starts
+    # with `release_core_name`, so swapping the prefix is safe).
+    default_name = sd_core_name + asset['name'][len(release_core_name):]
+    rename_to = section.get('distribution_filename', '').strip() or default_name
     out_path = category_dir / rename_to
     if not _download_asset(asset, out_path, headers, fork_name):
         return
