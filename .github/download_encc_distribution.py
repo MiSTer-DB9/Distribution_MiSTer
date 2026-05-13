@@ -446,12 +446,12 @@ def _fetch_one_stable(fork_name, section, category_index, headers, target_dir):
     print(f"{fork_name}: replaced {category_dir.name}/{rename_to} from {release_tag} ({src_label}, {asset.get('size','?')} bytes)")
 
 def inject_stable_files(target_dir, forks):
-    raw = forks.get('Forks', {}).get('release_v2_forks', '').strip()
+    raw = forks.get('Forks', {}).get('syncing_forks', '').strip()
     if not raw:
-        print('RELEASE_V2_FORKS empty — skipping stable file injection.')
+        print('SYNCING_FORKS empty — skipping stable file injection.')
         return
-    v2_list = raw.split()
-    print(f"Release-v2 forks ({len(v2_list)}): {v2_list}")
+    stable_forks = raw.split()
+    print(f"Stable forks ({len(stable_forks)}): {stable_forks}")
 
     token = os.environ.get('GITHUB_TOKEN', '').strip()
     headers = {'Accept': 'application/vnd.github+json'}
@@ -461,7 +461,7 @@ def inject_stable_files(target_dir, forks):
     category_index = _build_category_index(target_dir)
 
     tasks = []
-    for fork_name in v2_list:
+    for fork_name in stable_forks:
         section = forks.get(fork_name)
         if not section:
             print(f"::warning::{fork_name}: section missing in Forks.ini — skipping")

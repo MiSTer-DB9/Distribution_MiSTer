@@ -2,7 +2,7 @@
 # [MiSTer-DB9 BEGIN] - per-fork DISTRIBUTION_FILTERS tag rewrite (Hook 3).
 #
 # Runs AFTER db_operator.py build emits dbencc.json and AFTER inject_unstable_tags.
-# For every RELEASE_V2_FORKS section in Forks.ini that declares a non-empty
+# For every SYNCING_FORKS section in Forks.ini that declares a non-empty
 # DISTRIBUTION_FILTERS key, overwrites the matching stable RBF entry's `tags`
 # array with EXACTLY the tokens listed there. Path-derived tags db_operator may
 # have added are dropped deliberately so default `filter = console` no longer
@@ -68,15 +68,15 @@ def main(db_path):
         sys.exit(1)
 
     forks = load_forks()
-    v2_list = forks.get('Forks', {}).get('release_v2_forks', '').strip().split()
-    if not v2_list:
-        print('RELEASE_V2_FORKS empty — nothing to filter.')
+    forks_list = forks.get('Forks', {}).get('syncing_forks', '').strip().split()
+    if not forks_list:
+        print('SYNCING_FORKS empty — nothing to filter.')
         return
 
     # release_core_name -> list of token ids (interned in tag_dictionary).
     core_to_token_ids = {}
     sections_with_filters = 0
-    for fork_name in v2_list:
+    for fork_name in forks_list:
         section = forks.get(fork_name)
         if not section:
             print(f"::warning::{fork_name}: missing section in Forks.ini")
@@ -89,14 +89,14 @@ def main(db_path):
         if not tokens:
             continue
         if release_core_name in core_to_token_ids:
-            print(f"::warning::duplicate release_core_name '{release_core_name}' across RELEASE_V2_FORKS — last wins")
+            print(f"::warning::duplicate release_core_name '{release_core_name}' across SYNCING_FORKS — last wins")
         core_to_token_ids[release_core_name] = [
             reserve_tag_id(db['tag_dictionary'], t) for t in tokens
         ]
         sections_with_filters += 1
 
     if not core_to_token_ids:
-        print('No RELEASE_V2_FORKS section declares DISTRIBUTION_FILTERS — nothing to rewrite.')
+        print('No SYNCING_FORKS section declares DISTRIBUTION_FILTERS — nothing to rewrite.')
         return
 
     touched = 0
