@@ -66,7 +66,7 @@ def main():
 
     fetch_jotego_bundles(forks, target_dir)
 
-    # [MiSTer-DB9 BEGIN] - overlay v2 forks' stable-builds asset onto whatever
+    # [MiSTer-DB9 BEGIN] - overlay v2 forks' newest stable release asset onto whatever
     # process_all() pulled from the (possibly stale) legacy releases/ dir.
     inject_stable_files(target_dir, forks)
 
@@ -171,7 +171,9 @@ def inject_fork_only_cores(cores, forks):
 
 # [MiSTer-DB9 BEGIN] - unstable channel file delivery (Hook 1).
 # Matches filenames produced by Forks_MiSTer/fork_ci_template/.github/unstable_release.sh.
-UNSTABLE_ASSET_RE = re.compile(r'^.*_unstable_\d{8}_\d{4}_[0-9a-f]{7}\.rbf$')
+# Extension is optional so Main_MiSTer's HPS binary (`MiSTer_unstable_<ts>_<sha7>`,
+# no extension) is matched alongside FPGA cores' `*.rbf`.
+UNSTABLE_ASSET_RE = re.compile(r'^.*_unstable_\d{8}_\d{4}_[0-9a-f]{7}(?:\.[A-Za-z0-9]+)?$')
 UNSTABLE_TAG_NAME = 'unstable-builds'
 UNSTABLE_FORKS_JSON_PATH = '/tmp/unstable_forks.json'
 
@@ -236,7 +238,7 @@ def _fetch_one_unstable(fork_name, section, out_dir, headers):
                   if a.get('name', '').startswith(asset_prefix)
                   and UNSTABLE_ASSET_RE.match(a.get('name', ''))]
     if not candidates:
-        print(f"::warning::{fork_name}: '{UNSTABLE_TAG_NAME}' has no {asset_prefix}*.rbf asset — skipping")
+        print(f"::warning::{fork_name}: '{UNSTABLE_TAG_NAME}' has no {asset_prefix}* asset — skipping")
         return
     candidates.sort(key=lambda a: a.get('created_at', ''), reverse=True)
 
@@ -267,12 +269,16 @@ def _fetch_one_unstable(fork_name, section, out_dir, headers):
         fetched += 1
         print(f"{fork_name}: fetched _Unstable/_{release_core_name}/{asset['name']} ({asset.get('size','?')} bytes)")
 
-    # Sweep stale RBFs in this variant's subdir — anything no longer in
+    # Sweep stale assets in this variant's subdir — anything no longer in
     # the fork's Release (pruned by unstable_release.sh's RETENTION cap)
     # gets dropped from the distribution too. Scope is one subdir per call
-    # so a misconfigured fork can't cause cross-core deletions.
+    # so a misconfigured fork can't cause cross-core deletions. Filter on
+    # UNSTABLE_ASSET_RE (not glob) so extension-less Main_MiSTer binaries
+    # are swept alongside *.rbf, and stray non-asset files are ignored.
     deleted = 0
-    for stale in variant_dir.glob('*.rbf'):
+    for stale in variant_dir.iterdir():
+        if not stale.is_file() or not UNSTABLE_ASSET_RE.match(stale.name):
+            continue
         if stale.name not in keep:
             try:
                 stale.unlink()
@@ -285,7 +291,7 @@ def _fetch_one_unstable(fork_name, section, out_dir, headers):
 def inject_unstable_files(target_dir, forks):
     """For each fork in Forks[UNSTABLE_FORKS], mirror the fork's
     `unstable-builds` Release into target_dir/_Unstable/_<RELEASE_CORE_NAME>/
-    in parallel — every retained RBF (fork-side RETENTION=7) lands on the
+    in parallel — up to the newest 7 retained RBFs per variant land on the
     SD card so users have a local rollback set without browsing GitHub.
     Stale RBFs in each variant's subdir are pruned to track Release state."""
     raw = forks.get('Forks', {}).get('unstable_forks', '').strip()
@@ -359,24 +365,35 @@ def _fetch_one_stable(fork_name, section, category_index, headers, target_dir):
     tag_prefix = f'stable/{main_branch}/'
     asset_re = re.compile(rf'^{re.escape(release_core_name)}_\d{{8}}_[0-9a-f]{{7}}(?:\.[A-Za-z0-9]+)?$')
 
-    list_url = f'https://api.github.com/repos/{owner}/{name}/releases?per_page=100'
-    try:
-        r = requests.get(list_url, headers=headers, timeout=30)
-    except requests.RequestException as e:
-        print(f"::warning::{fork_name}: stable release listing failed: {e}")
-        return
-    if r.status_code != 200:
-        print(f"::warning::{fork_name}: releases API returned {r.status_code} — skipping stable")
-        return
+    release = None
+    page = 1
+    while True:
+        list_url = f'https://api.github.com/repos/{owner}/{name}/releases?per_page=100&page={page}'
+        try:
+            r = requests.get(list_url, headers=headers, timeout=30)
+        except requests.RequestException as e:
+            print(f"::warning::{fork_name}: stable release listing failed: {e}")
+            return
+        if r.status_code != 200:
+            print(f"::warning::{fork_name}: releases API returned {r.status_code} — skipping stable")
+            return
 
-    matches = [rel for rel in r.json()
-               if isinstance(rel, dict)
-               and rel.get('tag_name', '').startswith(tag_prefix)]
-    if not matches:
+        releases = r.json()
+        if not releases:
+            break
+
+        matches = [rel for rel in releases
+                   if isinstance(rel, dict)
+                   and rel.get('tag_name', '').startswith(tag_prefix)]
+        if matches:
+            matches.sort(key=lambda rel: rel.get('created_at', ''), reverse=True)
+            release = matches[0]
+            break
+        page += 1
+
+    if not release:
         print(f"{fork_name}: no '{tag_prefix}*' release yet — leaving process_all output in place")
         return
-    matches.sort(key=lambda rel: rel.get('created_at', ''), reverse=True)
-    release = matches[0]
     release_tag = release.get('tag_name', '?')
 
     assets = release.get('assets', []) or []
@@ -386,10 +403,18 @@ def _fetch_one_stable(fork_name, section, category_index, headers, target_dir):
         return
     asset = candidates[0]
 
-    # Fork-only variants (e.g. Saturn_DualSDRAM) set DISTRIBUTION_CATEGORY in
-    # Forks.ini. Use it directly for placement so v2 stable does not depend on
-    # upstream `process_all` having dropped a sibling RBF for category inference.
-    explicit_category = section.get('distribution_category', '').strip()
+    # Placement fallback when `category_index` has no entry for `release_core_name`
+    # (no sibling RBF dropped by upstream `process_all` we can overlay onto):
+    #   - DISTRIBUTION_OVERLAY_DIR: for sections shipped via upstream's *extras*
+    #     path (e.g. Main_DB9, menu_DB9 → install_main_binary drops bare MiSTer /
+    #     menu.rbf at SD root). Read-only by this script; does NOT trigger
+    #     inject_fork_only_cores so the section is not synthesised as a core
+    #     (which would crash in upstream `process_core` on Main/Menu).
+    #   - DISTRIBUTION_CATEGORY: for fork-only cores (PSX_DS, Saturn_DS). Both
+    #     synthesises a cores entry (inject_fork_only_cores) AND drives v2
+    #     overlay placement here. Kept for backward compat.
+    explicit_category = (section.get('distribution_overlay_dir', '').strip()
+                        or section.get('distribution_category', '').strip())
     existing = category_index.get(release_core_name) or []
     if existing:
         category_dir = existing[0].parent
@@ -402,15 +427,23 @@ def _fetch_one_stable(fork_name, section, category_index, headers, target_dir):
     elif explicit_category:
         category_dir = Path(target_dir) / explicit_category
         category_dir.mkdir(parents=True, exist_ok=True)
-        print(f"{fork_name}: no process_all placement for {release_core_name}_*.* — using DISTRIBUTION_CATEGORY={explicit_category}")
+        print(f"{fork_name}: no process_all placement for {release_core_name}_*.* — using overlay dir '{explicit_category}'")
     else:
-        print(f"::warning::{fork_name}: process_all did not place any {release_core_name}_*.* and no DISTRIBUTION_CATEGORY set — skipping")
+        print(f"::warning::{fork_name}: process_all did not place any {release_core_name}_*.* and no DISTRIBUTION_OVERLAY_DIR / DISTRIBUTION_CATEGORY set — skipping")
         return
 
-    out_path = category_dir / asset['name']
+    # DISTRIBUTION_FILENAME override: write asset under a fixed on-SD name
+    # instead of `<core>_<date>_<sha7>.<ext>`. Used by Main_DB9 to keep the
+    # MiSTer binary at SD root as bare `MiSTer` (matching upstream layout
+    # and avoiding `MiSTer_<date>_<sha7>` accumulating next to bare `MiSTer`
+    # that `process_all` already placed there). The dated/sha-stamped name
+    # remains visible on the GitHub Release for provenance.
+    rename_to = section.get('distribution_filename', '').strip() or asset['name']
+    out_path = category_dir / rename_to
     if not _download_asset(asset, out_path, headers, fork_name):
         return
-    print(f"{fork_name}: replaced {category_dir.name}/{asset['name']} from {release_tag} ({asset.get('size','?')} bytes)")
+    src_label = asset['name'] if rename_to == asset['name'] else f"{asset['name']} → {rename_to}"
+    print(f"{fork_name}: replaced {category_dir.name}/{rename_to} from {release_tag} ({src_label}, {asset.get('size','?')} bytes)")
 
 def inject_stable_files(target_dir, forks):
     raw = forks.get('Forks', {}).get('release_v2_forks', '').strip()

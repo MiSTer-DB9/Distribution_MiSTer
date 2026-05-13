@@ -16,7 +16,9 @@ import re
 import sys
 import configparser
 
-UNSTABLE_ASSET_RE = re.compile(r'^(?P<core>.+?)_unstable_\d{8}_\d{4}_[0-9a-f]{7}\.rbf$')
+# Extension is optional so Main_MiSTer's HPS binary (`MiSTer_unstable_<ts>_<sha7>`,
+# no extension) is tagged alongside FPGA cores' `*.rbf`.
+UNSTABLE_ASSET_RE = re.compile(r'^(?P<core>.+?)_unstable_\d{8}_\d{4}_[0-9a-f]{7}(?:\.[A-Za-z0-9]+)?$')
 UNSTABLE_PATH_RE = re.compile(r'^_Unstable/_[^/]+/(?P<filename>[^/]+)$')
 
 # Side channel from download_encc_distribution.py — set by the Hook 1 step so
