@@ -173,7 +173,7 @@ def inject_fork_only_cores(cores, forks):
 # Matches filenames produced by Forks_MiSTer/fork_ci_template/.github/unstable_release.sh.
 # Extension is optional so Main_MiSTer's HPS binary (`MiSTer_unstable_<ts>_<sha7>`,
 # no extension) is matched alongside FPGA cores' `*.rbf`.
-UNSTABLE_ASSET_RE = re.compile(r'^.*_unstable_\d{8}_\d{4}_[0-9a-f]{7}(?:\.[A-Za-z0-9]+)?$')
+UNSTABLE_ASSET_RE = re.compile(r'^.*_unstable_\d{8}_\d{4}_[0-9a-f]{7}(?:_DB9)?(?:\.[A-Za-z0-9]+)?$')
 UNSTABLE_TAG_NAME = 'unstable-builds'
 UNSTABLE_FORKS_JSON_PATH = '/tmp/unstable_forks.json'
 
@@ -326,10 +326,11 @@ def inject_unstable_files(target_dir, forks):
 
 # [MiSTer-DB9 BEGIN] - stable channel file delivery (companion to inject_unstable_files).
 # Each variant publishes per-commit immutable tags `stable/<MAIN_BRANCH>/<YYYYMMDD>-<sha7>`,
-# one GitHub Release per tag. Matches both the new `<Core>_<YYYYMMDD>_<sha7>.<ext>`
-# form and the pre-rework legacy `<Core>_<YYYYMMDD>.<ext>` so any stale legacy
-# file in the SD-card category dir gets replaced on overlay.
-STABLE_ASSET_RE_TAIL = re.compile(r'_\d{8}(?:_[0-9a-f]{7})?(?:\.[A-Za-z0-9]+)?$')
+# one GitHub Release per tag. Matches the new `<Core>_<YYYYMMDD>_<sha7>_DB9.<ext>`
+# form, the prior `<Core>_<YYYYMMDD>_<sha7>.<ext>` form (for assets predating the
+# `_DB9` marker rollout), and the pre-rework legacy `<Core>_<YYYYMMDD>.<ext>` so
+# any stale legacy file in the SD-card category dir gets replaced on overlay.
+STABLE_ASSET_RE_TAIL = re.compile(r'_\d{8}(?:_[0-9a-f]{7})?(?:_DB9)?(?:\.[A-Za-z0-9]+)?$')
 
 def _build_category_index(target_dir):
     """One-shot scan of target_dir, keyed by '<core>_YYYYMMDD[_<sha7>]'-shaped basenames.
@@ -369,7 +370,7 @@ def _fetch_one_stable(fork_name, section, category_index, headers, target_dir):
     sd_core_name = release_core_name[len('Arcade-'):] if release_core_name.startswith('Arcade-') else release_core_name
 
     tag_prefix = f'stable/{main_branch}/'
-    asset_re = re.compile(rf'^{re.escape(release_core_name)}_\d{{8}}_[0-9a-f]{{7}}(?:\.[A-Za-z0-9]+)?$')
+    asset_re = re.compile(rf'^{re.escape(release_core_name)}_\d{{8}}_[0-9a-f]{{7}}(?:_DB9)?(?:\.[A-Za-z0-9]+)?$')
 
     release = None
     page = 1

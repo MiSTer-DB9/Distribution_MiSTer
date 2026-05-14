@@ -25,7 +25,7 @@ import re
 import sys
 import configparser
 
-STABLE_ASSET_RE = re.compile(r'^(?P<core>.+?)_\d{8}_[0-9a-f]{7}(?:\.[A-Za-z0-9]+)?$')
+STABLE_ASSET_RE = re.compile(r'^(?P<core>.+?)_\d{8}_[0-9a-f]{7}(?:_DB9)?(?:\.[A-Za-z0-9]+)?$')
 
 # Side channel from download_encc_distribution.py — already populated by the
 # Hook 1 step (inject_unstable_files) so we don't re-fetch Forks.ini.
