@@ -38,8 +38,10 @@
 import io
 import json
 import os
+import pathlib
 import re
 import sys
+import zipfile
 import configparser
 
 # Mandatory `_DB9` anchor: this hook only ever touches fork-built stable RBFs.
@@ -213,6 +215,17 @@ def main(db_path):
         touched += 1
 
     # Pass 2: prune orphaned tag_dictionary entries.
+    #
+    # `db_operator.save_zips()` strips `summary_file_content` from each zip
+    # before writing dbencc.json (db_operator.py line 1119:
+    # `del zip_description['summary_file_content']`), then emits a separate
+    # `<zip_id>_summary.json.zip` in cwd carrying those entries. So the union
+    # below MUST also read those on-disk summary zips — otherwise we'd prune
+    # `tag_dictionary` ids that are only referenced from external summaries
+    # (e.g. Filters/CRT-Sim/*.txt → tag id 391). When the next CI run downloads
+    # the published dbencc.json, `get_url_db()` repopulates `summary_file_content`
+    # from those external zip URLs, and `mut_diff_db` then crashes with KeyError
+    # on the pruned id.
     used = set()
     for entry in db.get('files', {}).values():
         used.update(entry.get('tags', []) or [])
@@ -224,6 +237,22 @@ def main(db_path):
             used.update(sub.get('tags', []) or [])
         for sub in (sfc.get('folders', {}) or {}).values():
             used.update(sub.get('tags', []) or [])
+
+    db_dir = pathlib.Path(db_path).resolve().parent
+    for zid in db.get('zips', {}).keys():
+        summary_zip = db_dir / f'{zid}_summary.json.zip'
+        if not summary_zip.is_file():
+            continue
+        with zipfile.ZipFile(summary_zip) as zf:
+            names = zf.namelist()
+            if not names:
+                continue
+            with zf.open(names[0]) as f:
+                sf = json.load(f)
+        for sub in (sf.get('files') or {}).values():
+            used.update(sub.get('tags') or [])
+        for sub in (sf.get('folders') or {}).values():
+            used.update(sub.get('tags') or [])
 
     pruned = 0
     for name in list(db['tag_dictionary'].keys()):
