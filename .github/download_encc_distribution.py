@@ -423,6 +423,17 @@ def _fetch_one_stable(fork_name, section, category_index, headers, target_dir):
     explicit_category = (section.get('distribution_overlay_dir', '').strip()
                         or section.get('distribution_category', '').strip())
     existing = category_index.get(sd_core_name) or []
+    # Disambiguate when multiple unrelated forks collapse onto the same
+    # `sd_core_name` after the `Arcade-` strip (e.g. Astrocade: the Bally
+    # Pro Arcade machine `[Arcade_Astrocade_DB9]` and the Bally home
+    # console `[Astrocade_DB9]`). Mirror upstream's routing so each fork
+    # claims only the index entries its upstream sibling would have placed:
+    #   install_arcade_core (download_distribution.py:378) → _Arcade/cores/
+    #   impl_install_generic_core (line 403)               → Cores.md category dir
+    if len(existing) > 1:
+        is_arcade_section = release_core_name.startswith('Arcade-')
+        existing = [p for p in existing
+                    if (p.parent.name == 'cores') == is_arcade_section]
     if existing:
         category_dir = existing[0].parent
         for old in existing:
