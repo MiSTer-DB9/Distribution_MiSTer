@@ -151,13 +151,12 @@ def inject_fork_only_cores(cores, forks):
         fork_repo = str(Path(section['fork_repo']).with_suffix("")).replace('https:/g', 'https://g')
         url = f"{fork_repo}/tree/{main_branch}"
         release_name = section['release_core_name']
-        display_name = section.get('distribution_name', release_name).strip() or release_name
-        key = (url.lower(), display_name.lower())
+        key = (url.lower(), release_name.lower())
         if key in existing_keys:
-            print(f"Skipping {fork} fork-only injection: (url,name) already in cores list ({url}, {display_name})")
+            print(f"Skipping {fork} fork-only injection: (url,name) already in cores list ({url}, {release_name})")
             continue
         cores.append({
-            'name': display_name,
+            'name': release_name,
             'url': url,
             'home': section.get('distribution_home', release_name).strip() or release_name,
             'comments': '',
@@ -165,7 +164,7 @@ def inject_fork_only_cores(cores, forks):
         })
         existing_keys.add(key)
         injected += 1
-        print(f"Injected fork-only core: {fork} → {url} as '{display_name}' (category={category})")
+        print(f"Injected fork-only core: {fork} → {url} as '{release_name}' (category={category})")
     if injected:
         print(f"Injected {injected} fork-only core(s).")
 
