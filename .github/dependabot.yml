@@ -1,0 +1,16 @@
+version: 2
+updates:
+  # Keeps the SHA-pinned actions in .github/workflows/ current. Repo default
+  # branch is `main`, but all fork work and update_distribution.yml live on
+  # `develop` (the workflow only triggers on push to develop) -> target-branch.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    target-branch: "develop"
+    schedule:
+      interval: "weekly"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: "ci"
