@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
-# [MiSTer-DB9 BEGIN] - unstable channel tag rewrite (Hook 2).
+# Unstable channel tag rewrite (Hook 2).
 #
 # Runs AFTER db_operator.py build emits dbencc.json. Walks every file entry
 # whose path matches `_Unstable/_<CoreDir>/.*_unstable_<ts>_<sha>.rbf` (per-
 # variant subdir layout mirroring the fork's `unstable-builds` Release),
-# overwrites its `tags` array with EXACTLY ['unstable', 'unstable-<slug>'],
-# and extends the tag_dictionary. Path-derived tags db_operator may have
-# added are dropped deliberately so `filter = console` does not pull in
-# unstable consoles — opt-in is via explicit `unstable*` tokens only.
+# overwrites its `tags` array with ['unstable', 'unstable-<slug>'] followed by
+# one `unstable-<token>` per token in the section's DISTRIBUTION_FILTERS (the
+# same key the stable hook reads — reused here, `unstable-` prefixed so the
+# unstable channel stays isolated and the all-tags-start-with-unstable
+# invariant holds), and extends the tag_dictionary. Path-derived tags
+# db_operator may have added are dropped deliberately so `filter = console`
+# does not pull in unstable consoles — opt-in is via explicit `unstable*`
+# tokens only (e.g. `filter = !unstable unstable-dualsdram`).
 
 import io
 import json
@@ -68,6 +72,7 @@ def main(db_path):
         return
 
     core_to_slug = {}
+    core_to_filters = {}  # release_core_name -> ['dualsdram', ...] (raw tokens)
     seen_slugs = {}
     for fork_name in unstable_list:
         section = forks.get(fork_name)
@@ -84,10 +89,21 @@ def main(db_path):
             sys.exit(1)
         seen_slugs[slug] = fork_name
         core_to_slug[release_core_name] = slug
+        # Reuse the stable hook's DISTRIBUTION_FILTERS key. Tokens are NOT
+        # slugified — only `unstable-` prefixed below — so hyphens survive
+        # (`dualsdram-saturn` -> `unstable-dualsdram-saturn`).
+        tokens = section.get('distribution_filters', '').strip().split()
+        if tokens:
+            core_to_filters[release_core_name] = tokens
 
     unstable_id = reserve_tag_id(db['tag_dictionary'], 'unstable')
     slug_ids = {slug: reserve_tag_id(db['tag_dictionary'], f'unstable-{slug}')
                 for slug in core_to_slug.values()}
+    # release_core_name -> ordered list of `unstable-<token>` tag ids.
+    filter_ids = {
+        core: [reserve_tag_id(db['tag_dictionary'], f'unstable-{t}') for t in tokens]
+        for core, tokens in core_to_filters.items()
+    }
 
     touched = unmatched = 0
     inverse = None  # lazy-built for invariant pass
@@ -101,28 +117,46 @@ def main(db_path):
             print(f"::warning::{path}: filename does not match _unstable_ pattern")
             unmatched += 1
             continue
-        slug = core_to_slug.get(am.group('core'))
+        core = am.group('core')
+        slug = core_to_slug.get(core)
         if not slug:
             # Stale entry: fork removed from UNSTABLE_FORKS but file still on
             # disk from a prior run. Leave tags alone so the downloader still
             # serves it; warn so maintainer notices.
-            print(f"::warning::{path}: core '{am.group('core')}' not in UNSTABLE_FORKS — leaving tags as db_operator emitted")
+            print(f"::warning::{path}: core '{core}' not in UNSTABLE_FORKS — leaving tags as db_operator emitted")
             unmatched += 1
             continue
-        entry['tags'] = [unstable_id, slug_ids[slug]]
+        tags = [unstable_id, slug_ids[slug]]
+        # Append DISTRIBUTION_FILTERS-derived ids; de-dup defensively so a
+        # token colliding with the slug can't double-list.
+        for fid in filter_ids.get(core, []):
+            if fid not in tags:
+                tags.append(fid)
+        entry['tags'] = tags
         touched += 1
 
-    # Invariant: every _Unstable/*.rbf db_operator emitted must now carry
-    # exactly the two unstable* tags. Fails loud if upstream db_operator
-    # behavior on _Unstable/ ever drifts.
+    # Invariant: every _Unstable/*.rbf this hook touched must now lead with
+    # ['unstable', 'unstable-<slug>'] and carry only `unstable`-prefixed tags
+    # (the optional DISTRIBUTION_FILTERS-derived tail is `unstable-` prefixed
+    # too). Fails loud if upstream db_operator behavior on _Unstable/ ever
+    # drifts. Stale entries (core not in UNSTABLE_FORKS) are left as-is above,
+    # so skip them here too.
     inverse = {v: k for k, v in db['tag_dictionary'].items()}
     bad = []
     for path, entry in db['files'].items():
-        if not UNSTABLE_PATH_RE.match(path):
+        m = UNSTABLE_PATH_RE.match(path)
+        if not m:
+            continue
+        am = UNSTABLE_ASSET_RE.match(m.group('filename'))
+        slug = core_to_slug.get(am.group('core')) if am else None
+        if not slug:
             continue
         tags = entry.get('tags', [])
         names = [inverse.get(t, f'?{t}') for t in tags]
-        if len(tags) != 2 or not all(n.startswith('unstable') for n in names):
+        if (len(tags) < 2
+                or names[0] != 'unstable'
+                or names[1] != f'unstable-{slug}'
+                or not all(n.startswith('unstable') for n in names)):
             bad.append((path, names))
     if bad:
         print('::error::Unstable tag invariant violated:')
@@ -140,4 +174,3 @@ if __name__ == '__main__':
         print('Usage: inject_unstable_tags.py <path-to-dbencc.json>')
         sys.exit(2)
     main(sys.argv[1])
-# [MiSTer-DB9 END]

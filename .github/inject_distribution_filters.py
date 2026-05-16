@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# [MiSTer-DB9 BEGIN] - per-fork DISTRIBUTION_FILTERS tag rewrite (Hook 3).
+# Per-fork DISTRIBUTION_FILTERS tag rewrite (Hook 3).
 #
 # Runs AFTER db_operator.py build emits dbencc.json and AFTER inject_unstable_tags.
 # For every SYNCING_FORKS section in Forks.ini that declares a non-empty
@@ -124,4 +124,3 @@ if __name__ == '__main__':
         print('Usage: inject_distribution_filters.py <path-to-dbencc.json>')
         sys.exit(2)
     main(sys.argv[1])
-# [MiSTer-DB9 END]

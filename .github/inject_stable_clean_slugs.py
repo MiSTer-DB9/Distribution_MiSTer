@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# [MiSTer-DB9 BEGIN] - stable channel per-game slug cleanup (Hook 4).
+# Stable channel per-game slug cleanup (Hook 4).
 #
 # Runs AFTER db_operator.py build emits dbencc.json, AFTER inject_unstable_tags
 # (Hook 2) and AFTER inject_distribution_filters (Hook 3).
@@ -291,4 +291,3 @@ if __name__ == '__main__':
         print('Usage: inject_stable_clean_slugs.py <path-to-dbencc.json>')
         sys.exit(2)
     main(sys.argv[1])
-# [MiSTer-DB9 END]
