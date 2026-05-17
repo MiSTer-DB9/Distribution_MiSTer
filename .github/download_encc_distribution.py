@@ -526,11 +526,30 @@ def fetch_jotego_bundles(forks, target_dir):
     """For each Forks.ini section with IS_JOTEGO_BUNDLE = true, download the
     GH release ZIP at RELEASE_URL and unpack it into the distribution:
 
-      release/mister/jt<core>.rbf  → <target>/_Arcade/cores/<core>_<YYYYMMDD>.rbf
-      release/mra/<game>.mra        → <target>/_Arcade/<game>.mra
+      release/mister/jt<core>.rbf                     → <target>/_Arcade/cores/jt<core>_<YYYYMMDD>.rbf
+      release/mra/<game>.mra                          → <target>/_Arcade/<game>.mra
+      release/mra/_alternatives/_<Core>/<v>.mra       → <target>/_Arcade/_alternatives/_<Core>/<v>.mra
 
-    The date stamp comes from the ZIP's HTTP Last-Modified header so reruns
-    are stable as long as the underlying release is unchanged. Bundles are
+    RBFs are date-stamped on purpose. jotego .mra reference the core via a
+    bare <rbf>jt<core></rbf>; MiSTer's get_rbf() (Main_MiSTer
+    support/arcade/mra_loader.cpp) matches any file whose name starts with
+    that fragment followed by '.' or '_', and keeps the lexicographically
+    greatest match. jotego's own jtcores db ships bare jt<core>.rbf;
+    '.'(0x2E) < '_'(0x5F), so jt<core>_<YYYYMMDD>.rbf sorts ABOVE the bare
+    file and the dated DB9 build wins at core-load even though the two
+    coexist on disk — and the Downloader never flags a duplicate because the
+    rel_paths differ (a bare name would collide and lose the jtcores
+    dedup race instead). Across nightlies the newer date sorts greater, so
+    the latest build always wins; the previous date drops out of dbencc and
+    the Downloader removes it as an orphan via its own store diff (no
+    accumulation, no manual purge needed). The date stamp comes from the
+    ZIP's HTTP Last-Modified header so reruns are stable while the
+    underlying release is unchanged.
+
+    The mra/ subtree is mirrored as-is so jotego's _alternatives/ folder
+    survives — db_operator.py keys the "alternatives" tag on
+    path.parts[1] == '_alternatives', so flattening every .mra into _Arcade/
+    would dump all game variants into the main folder. Bundles are
     intentionally appended after process_all() so the upstream-driven
     download stays the source of truth for non-jotego content; jotego
     cores live alongside the MiSTer-devel arcade lineup, never replacing
@@ -580,14 +599,26 @@ def fetch_jotego_bundles(forks, target_dir):
                     if member.endswith('/'):
                         continue
                     name = Path(member).name
+                    parts = Path(member).parts
                     parent = Path(member).parent.as_posix()
                     if name.endswith('.rbf') and '/mister' in '/' + parent:
+                        # Date-stamped so MiSTer get_rbf()'s lexicographic
+                        # pick favours this over jtcores' bare jt<core>.rbf
+                        # (see docstring); rel_path differs from jtcores so
+                        # no Downloader dedup collision.
                         out = cores_dir / f"{Path(name).stem}_{date_stamp}.rbf"
                         with zf.open(member) as src, open(out, 'wb') as dst:
                             shutil.copyfileobj(src, dst)
                         rbfs += 1
-                    elif name.endswith('.mra'):
-                        out = arcade_dir / name
+                    elif name.endswith('.mra') and 'mra' in parts:
+                        # Preserve the path below the zip's mra/ dir so
+                        # release/mra/_alternatives/_<Core>/<v>.mra lands at
+                        # _Arcade/_alternatives/_<Core>/<v>.mra (not flattened
+                        # into _Arcade/, which would dump every game variant
+                        # into the main folder).
+                        rel = Path(*parts[parts.index('mra') + 1:])
+                        out = arcade_dir / rel
+                        out.parent.mkdir(parents=True, exist_ok=True)
                         with zf.open(member) as src, open(out, 'wb') as dst:
                             shutil.copyfileobj(src, dst)
                         mras += 1
