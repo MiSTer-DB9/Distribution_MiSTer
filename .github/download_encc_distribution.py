@@ -526,21 +526,24 @@ def fetch_jotego_bundles(forks, target_dir):
     """For each Forks.ini section with IS_JOTEGO_BUNDLE = true, download the
     GH release ZIP at RELEASE_URL and unpack it into the distribution:
 
-      release/mister/jt<core>.rbf                     → <target>/_Arcade/cores/jt<core>_<YYYYMMDD>.rbf
+      release/mister/jt<core>.rbf                     → <target>/_Arcade/cores/jt<core>_<YYYYMMDD>_DB9.rbf
       release/mra/<game>.mra                          → <target>/_Arcade/<game>.mra
       release/mra/_alternatives/_<Core>/<v>.mra       → <target>/_Arcade/_alternatives/_<Core>/<v>.mra
 
-    RBFs are date-stamped on purpose. jotego .mra reference the core via a
+    RBFs are date-stamped on purpose, with a trailing _DB9 marker so the
+    on-SD filename is coherent with every regular fork core
+    (<Core>_<YYYYMMDD>_<sha7>_DB9.rbf). jotego .mra reference the core via a
     bare <rbf>jt<core></rbf>; MiSTer's get_rbf() (Main_MiSTer
     support/arcade/mra_loader.cpp) matches any file whose name starts with
     that fragment followed by '.' or '_', and keeps the lexicographically
     greatest match. jotego's own jtcores db ships bare jt<core>.rbf;
-    '.'(0x2E) < '_'(0x5F), so jt<core>_<YYYYMMDD>.rbf sorts ABOVE the bare
-    file and the dated DB9 build wins at core-load even though the two
+    '.'(0x2E) < '_'(0x5F), so jt<core>_<YYYYMMDD>_DB9.rbf sorts ABOVE the
+    bare file and the dated DB9 build wins at core-load even though the two
     coexist on disk — and the Downloader never flags a duplicate because the
     rel_paths differ (a bare name would collide and lose the jtcores
-    dedup race instead). Across nightlies the newer date sorts greater, so
-    the latest build always wins; the previous date drops out of dbencc and
+    dedup race instead). The _DB9 suffix is constant, so the <YYYYMMDD>
+    field stays the discriminator: across nightlies the newer date sorts
+    greater, so the latest build always wins; the previous date drops out of dbencc and
     the Downloader removes it as an orphan via its own store diff (no
     accumulation, no manual purge needed). The date stamp comes from the
     ZIP's HTTP Last-Modified header so reruns are stable while the
@@ -602,11 +605,12 @@ def fetch_jotego_bundles(forks, target_dir):
                     parts = Path(member).parts
                     parent = Path(member).parent.as_posix()
                     if name.endswith('.rbf') and '/mister' in '/' + parent:
-                        # Date-stamped so MiSTer get_rbf()'s lexicographic
-                        # pick favours this over jtcores' bare jt<core>.rbf
+                        # Date-stamped + _DB9 marker so MiSTer get_rbf()'s
+                        # lexicographic pick favours this over jtcores' bare
+                        # jt<core>.rbf and the name matches regular cores
                         # (see docstring); rel_path differs from jtcores so
                         # no Downloader dedup collision.
-                        out = cores_dir / f"{Path(name).stem}_{date_stamp}.rbf"
+                        out = cores_dir / f"{Path(name).stem}_{date_stamp}_DB9.rbf"
                         with zf.open(member) as src, open(out, 'wb') as dst:
                             shutil.copyfileobj(src, dst)
                         rbfs += 1
