@@ -55,6 +55,12 @@ jobs:
         curl -o /tmp/db_operator.py "https://raw.githubusercontent.com/MiSTer-devel/Distribution_MiSTer/develop/.github/db_operator.py"
         curl -o /tmp/test_database.sh "https://raw.githubusercontent.com/MiSTer-devel/Distribution_MiSTer/develop/.github/test_database.sh"
         curl -o /tmp/push_database.sh "https://raw.githubusercontent.com/MiSTer-devel/Distribution_MiSTer/develop/.github/push_database.sh"
+        # [MiSTer-DB9 BEGIN] - the all_releases/releases.txt audit log is upstream
+        # bookkeeping not consumed by the Downloader; a transient gh 401 on it
+        # must not red-fail the workflow after the DB git-push already published.
+        # git push lines stay fatal so real publish failures still fail the job.
+        sed -i 's#^gh release upload all_releases releases\.txt --clobber$#& || true#' /tmp/push_database.sh
+        # [MiSTer-DB9 END]
         chmod +x /tmp/db_operator.py /tmp/test_database.sh /tmp/push_database.sh
 
     - name: Download Distribution
