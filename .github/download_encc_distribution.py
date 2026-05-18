@@ -207,10 +207,12 @@ def _github_api_headers():
     return headers
 
 def _stream_to_file(url, out_path, fork_name, what, *, headers=None,
-                     allow_redirects=False, mkdir=False):
+                     allow_redirects=True, mkdir=False):
     """Stream `url` to `out_path` in 1 MiB chunks. On RequestException the
     partial file is unlinked and False returned; True on success. `what` is
-    the noun phrase used in the failure log line."""
+    the noun phrase used in the failure log line. `allow_redirects` defaults
+    True (GitHub release `browser_download_url` 302-redirects to the asset
+    CDN; following it is required or the file lands empty)."""
     out_path = Path(out_path)
     try:
         with requests.get(url, headers=headers, stream=True, timeout=120,
