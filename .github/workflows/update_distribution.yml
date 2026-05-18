@@ -127,6 +127,17 @@ jobs:
       run: ./.github/inject_jtbindb_tags.py "${DB_JSON_NAME}"
     # [MiSTer-DB9 END]
 
+    # [MiSTer-DB9 BEGIN] - set the DB-level default_options.filter so the
+    # no-filter cohort gets a sane default (stable set minus nightly unstable
+    # builds, jotego beta-key MRAs, Dual-SDRAM variants). Users who set their
+    # own filter are unaffected; each token stays opt-in. Mirrors jotego's
+    # own `!jtbeta` default. DB-level (not per-entry) so order vs the tag
+    # hooks is independent; must run AFTER Build Database.
+    - name: Inject Default Options
+      if: steps.db_exists.outputs.new_db == 'true'
+      run: ./.github/inject_default_options.py "${DB_JSON_NAME}"
+    # [MiSTer-DB9 END]
+
     - name: Test Database
       if: steps.db_exists.outputs.new_db == 'true'
       run: /tmp/test_database.sh
