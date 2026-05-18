@@ -114,6 +114,19 @@ jobs:
       run: ./.github/inject_stable_clean_slugs.py "${DB_JSON_NAME}"
     # [MiSTer-DB9 END]
 
+    # [MiSTer-DB9 BEGIN] - reassert jotego's authoritative jtbindb tags onto
+    # the jt entries. download_encc_distribution.fetch_jotego_bundles() drove
+    # the jt set from jotego's jtbindb (overlaying our DB9 rebuild); db_operator
+    # then re-derived path tags for those files. This restores jotego's exact
+    # tag taxonomy (`jtbeta`, controls_*, ...) from /tmp/jtbindb_slice.json so
+    # the jt channel keeps jotego's filters and stays out of default
+    # `filter = console`. Must run AFTER Build Database; order vs the other
+    # hooks is independent (it keys on exact jt rel_paths none of them touch).
+    - name: Inject jtbindb Tags
+      if: steps.db_exists.outputs.new_db == 'true'
+      run: ./.github/inject_jtbindb_tags.py "${DB_JSON_NAME}"
+    # [MiSTer-DB9 END]
+
     - name: Test Database
       if: steps.db_exists.outputs.new_db == 'true'
       run: /tmp/test_database.sh

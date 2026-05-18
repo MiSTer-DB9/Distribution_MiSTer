@@ -51,23 +51,10 @@ STABLE_ASSET_RE = re.compile(r'^(?P<core>.+?)_\d{8}_[0-9a-f]{7}_DB9(?:\.[A-Za-z0
 # Hook 1 step (inject_unstable_files) so we don't re-fetch Forks.ini.
 FORKS_JSON_CACHE = '/tmp/unstable_forks.json'
 
-# Side-channel manifest of jotego-bundle RBF basenames produced this run,
-# written by download_encc_distribution.fetch_jotego_bundles(). jotego RBFs
-# now carry the regular `_<YYYYMMDD>_<sha7>_DB9` form so they match
-# STABLE_ASSET_RE, but Jotego_jtcores is intentionally not a SYNCING_FORKS
-# section — skipping them via this manifest avoids spurious
-# "no SYNCING_FORKS section" warnings without masking real fork-core drift.
-JOTEGO_FILES_JSON_PATH = '/tmp/jotego_bundle_files.json'
-
-
-def load_jotego_basenames():
-    if os.path.isfile(JOTEGO_FILES_JSON_PATH):
-        try:
-            with open(JOTEGO_FILES_JSON_PATH) as f:
-                return set(json.load(f)), True
-        except (OSError, ValueError):
-            pass
-    return set(), False
+# jt cores are no longer special-cased here: download_encc_distribution.
+# fetch_jotego_bundles() now drives the jt set from jotego's jtbindb and
+# inject_jtbindb_tags.py (Hook 5) positively reasserts jotego's tags, so there
+# is nothing for this hook to skip.
 
 
 def load_forks():
@@ -129,21 +116,6 @@ def main(db_path):
         print('SYNCING_FORKS empty — nothing to clean.')
         return
 
-    # jotego-bundle RBFs match STABLE_ASSET_RE but have no SYNCING_FORKS
-    # section — skip them silently. Primary source: the manifest written by
-    # fetch_jotego_bundles (always present in CI, where this hook runs after
-    # download_encc_distribution.py in the same workflow). Fallback for
-    # standalone manual reruns where the manifest is absent: if Forks.ini
-    # declares ≥1 IS_JOTEGO_BUNDLE section, treat an unknown `jt*` core_key as
-    # jotego. Every real SYNCING_FORKS arcade section is `Arcade-*`, never a
-    # bare `jt*`, so this can't mask genuine fork-core drift.
-    jotego_basenames, jotego_manifest_present = load_jotego_basenames()
-    jotego_prefix_fallback = not jotego_manifest_present and any(
-        isinstance(sec, dict)
-        and sec.get('is_jotego_bundle', '').strip().lower() == 'true'
-        for sec in forks.values()
-    )
-
     # Build the core_key -> clean_slug map. Two distinct keys point at the same
     # slug for arcade sections, because `_fetch_one_stable` strips the
     # `Arcade-` prefix when placing the file on disk (matches upstream
@@ -196,7 +168,6 @@ def main(db_path):
     touched = 0
     unmatched_core = 0
     missing_polluted = 0
-    skipped_jotego = 0
     affected = []  # [(path, polluted_id, clean_id)] for the invariant assertion
     for path, entry in db['files'].items():
         if path.startswith('_Unstable/'):
@@ -206,16 +177,6 @@ def main(db_path):
         if not m:
             continue
         core_key = m.group('core')
-        if basename in jotego_basenames or (
-            jotego_prefix_fallback
-            and core_key.startswith('jt')
-            and core_to_slug.get(core_key) is None
-        ):
-            # jotego-bundle RBF — no SYNCING_FORKS section by design; skip
-            # silently (pre-existing db-tag pollution for jotego is out of
-            # scope for this hook and untouched either way).
-            skipped_jotego += 1
-            continue
         if core_key in hook3_owned:
             # Hook 3 already rewrote entry['tags']; the polluted tag is gone.
             continue
@@ -322,7 +283,6 @@ def main(db_path):
         f"Stable slug cleanup: {touched} entries rewritten, "
         f"{pruned} orphan tag(s) pruned "
         f"({skipped_filtered} section(s) deferred to Hook 3, "
-        f"{skipped_jotego} jotego bundle file(s) skipped, "
         f"{unmatched_core} file(s) with no SYNCING_FORKS section, "
         f"{missing_polluted} file(s) with no polluted tag to remove)"
     )

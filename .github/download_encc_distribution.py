@@ -175,12 +175,17 @@ def inject_fork_only_cores(cores, forks):
 UNSTABLE_ASSET_RE = re.compile(r'^.*_unstable_\d{8}_\d{4}_[0-9a-f]{7}(?:_DB9)?(?:\.[A-Za-z0-9]+)?$')
 UNSTABLE_TAG_NAME = 'unstable-builds'
 UNSTABLE_FORKS_JSON_PATH = '/tmp/unstable_forks.json'
-# Side-channel manifest of jotego-bundle RBF basenames produced this run.
-# Consumed by inject_stable_clean_slugs.py (Hook 4) so it can deterministically
-# skip jotego entries instead of warning on them — the dated+sha7+_DB9 names
-# now match its STABLE_ASSET_RE but Jotego_jtcores is intentionally not a
-# SYNCING_FORKS section.
-JOTEGO_FILES_JSON_PATH = '/tmp/jotego_bundle_files.json'
+# Side-channel slice of jotego's authoritative jtbindb manifest produced this
+# run: { "by_path": { produced_rel_path: [tag-name, ...] } }. Consumed by
+# inject_jtbindb_tags.py (Hook 5) which restores jotego's curated tag taxonomy
+# onto the jt entries db_operator emitted (whose path-derived tags would
+# otherwise pull jt into default `filter = console` and lose `!jtbeta`).
+JTBINDB_SLICE_JSON_PATH = '/tmp/jtbindb_slice.json'
+# jotego's official MiSTer Downloader database — single source of truth for the
+# jt file/MRA/alternatives/tag set. Overridable per-section via JTBINDB_URL.
+JTBINDB_DEFAULT_URL = 'https://raw.githubusercontent.com/jotego/jtcores_mister/main/jtbindb.json.zip'
+# jtbindb keys arcade files under this prefix; our on-disk layout mirrors it.
+ARCADE_PREFIX = '_Arcade/'
 JOTEGO_ASSET_NAME = 'jtcores-mister-db9.zip'
 # jtcores nightly release encodes the source commit in its tag (`mister-<sha>`);
 # the body's `Built from `<sha>`` line is the fallback when the tag is renamed.
@@ -201,25 +206,37 @@ def _github_api_headers():
         headers['Authorization'] = f'token {token}'
     return headers
 
-def _download_asset(asset, out_path, headers, fork_name):
-    """Stream `asset` to `out_path` with chunked writes. Unlinks the partial
-    file on RequestException and returns False; True on success."""
-    dl_url = asset.get('browser_download_url') or asset.get('url')
+def _stream_to_file(url, out_path, fork_name, what, *, headers=None,
+                     allow_redirects=False, mkdir=False):
+    """Stream `url` to `out_path` in 1 MiB chunks. On RequestException the
+    partial file is unlinked and False returned; True on success. `what` is
+    the noun phrase used in the failure log line."""
+    out_path = Path(out_path)
     try:
-        with requests.get(dl_url, headers=headers, stream=True, timeout=120) as dr:
-            dr.raise_for_status()
+        with requests.get(url, headers=headers, stream=True, timeout=120,
+                          allow_redirects=allow_redirects) as r:
+            r.raise_for_status()
+            if mkdir:
+                out_path.parent.mkdir(parents=True, exist_ok=True)
             with open(out_path, 'wb') as fh:
-                for chunk in dr.iter_content(chunk_size=1024 * 1024):
+                for chunk in r.iter_content(chunk_size=1024 * 1024):
                     if chunk:
                         fh.write(chunk)
     except requests.RequestException as e:
-        print(f"::warning::{fork_name}: download failed for {asset['name']}: {e}")
+        print(f"::warning::{fork_name}: {what}: {e}")
         try:
             out_path.unlink()
         except OSError:
             pass
         return False
     return True
+
+def _download_asset(asset, out_path, headers, fork_name):
+    """Stream a GH release `asset` to `out_path`. See _stream_to_file."""
+    dl_url = asset.get('browser_download_url') or asset.get('url')
+    return _stream_to_file(dl_url, out_path, fork_name,
+                           f"download failed for {asset['name']}",
+                           headers=headers)
 
 def _fetch_one_unstable(fork_name, section, out_dir, headers):
     owner, name = _parse_fork_repo(section.get('fork_repo', ''))
@@ -535,97 +552,133 @@ def replace_urls(cores, extra_content_categories, forks):
             extra_content_categories[replacements[lower]] = extra_content_categories[key]
             del extra_content_categories[key]
 
+# [MiSTer-DB9 BEGIN] - jotego/jtcores: jtbindb-driven jt distribution
+# (single source of truth = jotego's official jtbindb.json; we overlay our
+# DB9 rebuild where available, jotego's official binary otherwise).
+def _resolve_jtcores_db9_zip(fork_name, cfg):
+    """Resolve the MiSTer-DB9/jtcores release zip URL + its source sha7 from the
+    SAME release: a static releases/latest/download URL would race a release
+    published between the metadata read and the download, mismatching the sha7
+    baked into the filename against the bytes actually shipped."""
+    url = cfg.get('release_url', '').strip()
+    sha7 = ''
+    dl_url = url
+    owner, name = _parse_fork_repo(cfg.get('fork_repo', ''))
+    if owner:
+        rel_url = f'https://api.github.com/repos/{owner}/{name}/releases/latest'
+        try:
+            rr = requests.get(rel_url, headers=_github_api_headers(), timeout=30)
+            if rr.status_code == 200:
+                rel = rr.json()
+                m = (JOTEGO_TAG_SHA_RE.match(rel.get('tag_name', '') or '')
+                     or JOTEGO_BODY_SHA_RE.search(rel.get('body', '') or ''))
+                if m:
+                    sha7 = m.group(1)[:7]
+                for asset in rel.get('assets', []) or []:
+                    if asset.get('name') == JOTEGO_ASSET_NAME:
+                        dl_url = asset.get('browser_download_url') or url
+                        break
+            else:
+                print(f"::warning::{fork_name}: releases/latest API returned "
+                      f"{rr.status_code} — falling back to RELEASE_URL, no sha7")
+        except requests.RequestException as e:
+            print(f"::warning::{fork_name}: releases/latest API failed ({e}) "
+                  f"— falling back to RELEASE_URL, no sha7")
+    else:
+        print(f"::warning::{fork_name}: malformed/absent FORK_REPO — cannot "
+              f"derive sha7, falling back to RELEASE_URL")
+    if not sha7:
+        print(f"::warning::{fork_name}: could not derive jtcores sha7 — RBF "
+              f"names will lack the _<sha7> field this run")
+    return dl_url, sha7
+
+
+def _http_to_file(url, out_path, fork_name):
+    """jotego-fallback download (unauthenticated, follows redirects, creates
+    parents). See _stream_to_file."""
+    return _stream_to_file(url, out_path, fork_name,
+                           f"fallback download failed for {url}",
+                           allow_redirects=True, mkdir=True)
+
+
 def fetch_jotego_bundles(forks, target_dir):
-    """For each Forks.ini section with IS_JOTEGO_BUNDLE = true, download the
-    GH release ZIP at RELEASE_URL and unpack it into the distribution:
+    """Single-source-of-truth jt distribution.
 
-      release/mister/jt<core>.rbf                     → <target>/_Arcade/cores/jt<core>_<YYYYMMDD>_<sha7>_DB9.rbf
-      release/mra/<game>.mra                          → <target>/_Arcade/<game>.mra
-      release/mra/_alternatives/_<Core>/<v>.mra       → <target>/_Arcade/_alternatives/_<Core>/<v>.mra
+    jotego's official jtbindb.json (his MiSTer Downloader database) is the
+    authoritative manifest for the jt file / MRA / _alternatives / tag set.
+    For every entry in it we:
 
-    RBFs are date-stamped and carry the jtcores commit sha7 plus a trailing
-    _DB9 marker so the on-SD filename is byte-for-byte coherent with every
-    regular fork core (<Core>_<YYYYMMDD>_<sha7>_DB9.rbf). The sha7 is the
-    short commit of the MiSTer-DB9/jtcores release the bundle was built from,
-    read from that release's `mister-<sha7>` tag (the jtcores build workflow
-    lives in that repo, not here). jotego .mra reference the core via a
-    bare <rbf>jt<core></rbf>; MiSTer's get_rbf() (Main_MiSTer
-    support/arcade/mra_loader.cpp) matches any file whose name starts with
-    that fragment followed by '.' or '_', and keeps the lexicographically
-    greatest match. jotego's own jtcores db ships bare jt<core>.rbf;
-    '.'(0x2E) < '_'(0x5F), so jt<core>_<YYYYMMDD>_DB9.rbf sorts ABOVE the
-    bare file and the dated DB9 build wins at core-load even though the two
-    coexist on disk — and the Downloader never flags a duplicate because the
-    rel_paths differ (a bare name would collide and lose the jtcores
-    dedup race instead). The _DB9 suffix is constant, so the <YYYYMMDD>
-    field stays the discriminator: across nightlies the newer date sorts
-    greater, so the latest build always wins; the previous date drops out of dbencc and
-    the Downloader removes it as an orphan via its own store diff (no
-    accumulation, no manual purge needed). The date stamp comes from the
-    ZIP's HTTP Last-Modified header so reruns are stable while the
-    underlying release is unchanged.
+      - RBF we rebuilt with DB9MD/Saturn/key-gate → write our DB9 build to
+        _Arcade/cores/jt<core>_<YYYYMMDD>_<sha7>_DB9.rbf. The date+sha7+_DB9
+        name is the fork-wide convention and makes MiSTer get_rbf()'s
+        lexicographic pick favour this over jotego's bare jt<core>.rbf
+        ('.'(0x2E) < '_'(0x5F)); rel_path differs from jtbindb's so the
+        Downloader never flags a dedup collision (unchanged from before).
+      - RBF jotego ships but we did not rebuild → jotego's official binary
+        from jtbindb's (SHA-pinned) base_files_url, at its bare canonical
+        rel_path.
+      - MRA / _alternatives → taken from our DB9 zip when present (jotego-
+        built, already local), else jotego's base_files_url. Subtree
+        preserved so _Arcade/_alternatives/_<Core>/<v>.mra is not flattened.
 
-    The mra/ subtree is mirrored as-is so jotego's _alternatives/ folder
-    survives — db_operator.py keys the "alternatives" tag on
-    path.parts[1] == '_alternatives', so flattening every .mra into _Arcade/
-    would dump all game variants into the main folder. Bundles are
-    intentionally appended after process_all() so the upstream-driven
-    download stays the source of truth for non-jotego content; jotego
-    cores live alongside the MiSTer-devel arcade lineup, never replacing
-    a same-named upstream core (none exist).
+    Tags are taken verbatim from jtbindb and reapplied to dbencc.json by
+    inject_jtbindb_tags.py (Hook 5), so jotego-added games/cores and his
+    curated filter taxonomy (`!jtbeta`, controls_*, ...) flow through with no
+    parallel definition to maintain here. Appended after process_all() so the
+    upstream-driven download stays the source of truth for non-jt content.
     """
     target_dir = Path(target_dir)
     arcade_dir = target_dir / '_Arcade'
     cores_dir = arcade_dir / 'cores'
-    produced_rbfs = []  # basenames → JOTEGO_FILES_JSON_PATH manifest for Hook 4
+    by_path = {}  # produced_rel_path -> [jotego tag name, ...] for Hook 5
+
     for fork_name, cfg in forks.items():
         if cfg.get('is_jotego_bundle', '').strip().lower() != 'true':
             continue
-        url = cfg.get('release_url', '').strip()
-        if not url:
-            print(f"::warning::{fork_name}: IS_JOTEGO_BUNDLE without RELEASE_URL — skipping")
+
+        # --- jotego's authoritative manifest -------------------------------
+        jtbindb_url = cfg.get('jtbindb_url', '').strip() or JTBINDB_DEFAULT_URL
+        try:
+            jr = requests.get(jtbindb_url, timeout=120, allow_redirects=True)
+            jr.raise_for_status()
+        except requests.RequestException as e:
+            print(f"::error::{fork_name}: failed to fetch jtbindb "
+                  f"{jtbindb_url}: {e}")
+            continue
+        try:
+            with zipfile.ZipFile(io.BytesIO(jr.content)) as jz:
+                jname = next((n for n in jz.namelist()
+                              if n.endswith('.json')), None)
+                if jname is None:
+                    print(f"::error::{fork_name}: no .json inside jtbindb zip")
+                    continue
+                jtbindb = json.loads(jz.read(jname))
+        except (zipfile.BadZipFile, ValueError) as e:
+            print(f"::error::{fork_name}: cannot parse jtbindb zip: {e}")
             continue
 
-        # Resolve sha7 AND the zip URL from the SAME release: a static
-        # releases/latest/download URL would race a release published between
-        # the metadata read and the download, mismatching the sha7 baked into
-        # the filename against the bytes actually shipped.
-        sha7 = ''
-        dl_url = url
-        owner, name = _parse_fork_repo(cfg.get('fork_repo', ''))
-        if owner:
-            rel_url = f'https://api.github.com/repos/{owner}/{name}/releases/latest'
-            try:
-                rr = requests.get(rel_url, headers=_github_api_headers(), timeout=30)
-                if rr.status_code == 200:
-                    rel = rr.json()
-                    m = (JOTEGO_TAG_SHA_RE.match(rel.get('tag_name', '') or '')
-                         or JOTEGO_BODY_SHA_RE.search(rel.get('body', '') or ''))
-                    if m:
-                        sha7 = m.group(1)[:7]
-                    for asset in rel.get('assets', []) or []:
-                        if asset.get('name') == JOTEGO_ASSET_NAME:
-                            dl_url = asset.get('browser_download_url') or url
-                            break
-                else:
-                    print(f"::warning::{fork_name}: releases/latest API "
-                          f"returned {rr.status_code} — falling back to "
-                          f"RELEASE_URL, no sha7 in filenames")
-            except requests.RequestException as e:
-                print(f"::warning::{fork_name}: releases/latest API failed "
-                      f"({e}) — falling back to RELEASE_URL, no sha7 in "
-                      f"filenames")
-        else:
-            print(f"::warning::{fork_name}: malformed/absent FORK_REPO — "
-                  f"cannot derive sha7, falling back to RELEASE_URL")
-        if not sha7:
-            print(f"::warning::{fork_name}: could not derive jtcores sha7 — "
-                  f"RBF names will lack the _<sha7> field this run")
+        base_url = jtbindb.get('base_files_url', '')
+        if base_url and not base_url.endswith('/'):
+            base_url += '/'
+        jt_files = jtbindb.get('files', {})
+        id_to_name = {v: k for k, v
+                      in jtbindb.get('tag_dictionary', {}).items()}
 
-        print(f"Fetching jotego bundle '{fork_name}' from {dl_url}"
+        def names_for(meta):
+            return sorted({id_to_name[i] for i in meta.get('tags', [])
+                           if i in id_to_name})
+
+        # --- our DB9 rebuild zip (DB9MD/Saturn/key-gate; still required) ----
+        dl_url, sha7 = _resolve_jtcores_db9_zip(fork_name, cfg)
+        if not dl_url:
+            print(f"::warning::{fork_name}: IS_JOTEGO_BUNDLE without a "
+                  f"resolvable RELEASE_URL — skipping")
+            continue
+        print(f"Fetching jotego DB9 bundle '{fork_name}' from {dl_url}"
               f"{f' (sha7 {sha7})' if sha7 else ''}")
         try:
-            resp = requests.get(dl_url, timeout=600, stream=True, allow_redirects=True)
+            resp = requests.get(dl_url, timeout=600, stream=True,
+                                allow_redirects=True)
             resp.raise_for_status()
         except requests.RequestException as e:
             print(f"::error::{fork_name}: failed to fetch {dl_url}: {e}")
@@ -640,6 +693,7 @@ def fetch_jotego_bundles(forks, target_dir):
                 ).strftime('%Y%m%d')
             except ValueError:
                 pass
+        infix = f"{date_stamp}_{sha7}" if sha7 else date_stamp
 
         with tempfile.NamedTemporaryFile(suffix='.zip', delete=False) as tmp:
             for chunk in resp.iter_content(chunk_size=1024 * 1024):
@@ -650,61 +704,98 @@ def fetch_jotego_bundles(forks, target_dir):
         cores_dir.mkdir(parents=True, exist_ok=True)
         arcade_dir.mkdir(parents=True, exist_ok=True)
 
-        rbfs = mras = 0
+        rbfs = mras = fb_rbfs = fb_files = 0
+        fallbacks = []  # (url, out_path, rel_path, tagnames, is_rbf)
         try:
             with zipfile.ZipFile(zip_path) as zf:
+                def _extract(member, out):
+                    out.parent.mkdir(parents=True, exist_ok=True)
+                    with zf.open(member) as src, open(out, 'wb') as dst:
+                        shutil.copyfileobj(src, dst)
+
+                # Index the DB9 build: jt<core>.rbf by stem, mra subtree by the
+                # path below release/mra/ (mirrors jtbindb's _Arcade/ layout).
+                db9_rbf = {}   # stem -> zip member
+                db9_mra = {}   # 'Foo.mra' / '_alternatives/_X/y.mra' -> member
                 for member in zf.namelist():
                     if member.endswith('/'):
                         continue
-                    name = Path(member).name
                     parts = Path(member).parts
-                    parent = Path(member).parent.as_posix()
-                    if name.endswith('.rbf') and '/mister' in '/' + parent:
-                        # Date-stamped + sha7 + _DB9 marker so MiSTer
-                        # get_rbf()'s lexicographic pick favours this over
-                        # jtcores' bare jt<core>.rbf and the name matches
-                        # regular cores exactly (<Core>_<YYYYMMDD>_<sha7>_DB9;
-                        # see docstring). rel_path differs from jtcores so no
-                        # Downloader dedup collision. sha7 omitted only when
-                        # the release API was unreachable (graceful fallback).
-                        infix = f"{date_stamp}_{sha7}" if sha7 else date_stamp
-                        out = cores_dir / f"{Path(name).stem}_{infix}_DB9.rbf"
-                        with zf.open(member) as src, open(out, 'wb') as dst:
-                            shutil.copyfileobj(src, dst)
-                        produced_rbfs.append(out.name)
+                    nm = Path(member).name
+                    parent = '/' + Path(member).parent.as_posix()
+                    if nm.endswith('.rbf') and '/mister' in parent:
+                        db9_rbf[Path(nm).stem] = member
+                    elif nm.endswith('.mra') and 'mra' in parts:
+                        rel = Path(*parts[parts.index('mra') + 1:]).as_posix()
+                        db9_mra[rel] = member
+
+                # Phase 1: copy what the DB9 build provides straight out of the
+                # zip (zf is not thread-safe, so these stay sequential — local
+                # extraction is fast). Anything jotego ships that our DB9 build
+                # lacks is queued for a parallel fallback download (phase 2).
+                for rel_path, meta in jt_files.items():
+                    nm = rel_path.rsplit('/', 1)[-1]
+                    tagnames = names_for(meta)
+                    is_rbf = nm.endswith('.rbf')
+                    if is_rbf and nm[:-4] in db9_rbf:
+                        out = cores_dir / f"{nm[:-4]}_{infix}_DB9.rbf"
+                        _extract(db9_rbf[nm[:-4]], out)
                         rbfs += 1
-                    elif name.endswith('.mra') and 'mra' in parts:
-                        # Preserve the path below the zip's mra/ dir so
-                        # release/mra/_alternatives/_<Core>/<v>.mra lands at
-                        # _Arcade/_alternatives/_<Core>/<v>.mra (not flattened
-                        # into _Arcade/, which would dump every game variant
-                        # into the main folder).
-                        rel = Path(*parts[parts.index('mra') + 1:])
-                        out = arcade_dir / rel
-                        out.parent.mkdir(parents=True, exist_ok=True)
-                        with zf.open(member) as src, open(out, 'wb') as dst:
-                            shutil.copyfileobj(src, dst)
-                        mras += 1
+                        by_path[out.relative_to(target_dir).as_posix()] = tagnames
+                        continue
+                    if not is_rbf:
+                        sub = (rel_path[len(ARCADE_PREFIX):]
+                               if rel_path.startswith(ARCADE_PREFIX)
+                               else rel_path)
+                        if sub in db9_mra:
+                            _extract(db9_mra[sub], target_dir / rel_path)
+                            mras += 1
+                            by_path[rel_path] = tagnames
+                            continue
+                    fallbacks.append((base_url + rel_path,
+                                      target_dir / rel_path,
+                                      rel_path, tagnames, is_rbf))
+
+                # Phase 2: jotego-fallback downloads in parallel (mirrors the
+                # ThreadPoolExecutor pattern inject_stable_files uses for bulk
+                # network I/O). by_path is folded in from the main thread as
+                # results arrive, so it is never shared across workers.
+                if fallbacks:
+                    def _fb(job):
+                        url, out, rel_path, tagnames, is_rbf = job
+                        return (rel_path, tagnames, is_rbf,
+                                _http_to_file(url, out, fork_name))
+                    with ThreadPoolExecutor(max_workers=16) as ex:
+                        for rel_path, tagnames, is_rbf, ok in ex.map(
+                                _fb, fallbacks):
+                            if not ok:
+                                continue
+                            by_path[rel_path] = tagnames
+                            if is_rbf:
+                                fb_rbfs += 1
+                            else:
+                                fb_files += 1
         finally:
             try:
                 os.unlink(zip_path)
             except OSError:
                 pass
 
-        if rbfs == 0:
-            print(f"::warning::{fork_name}: no jt*.rbf entries found under release/mister/ in bundle")
-        print(f"{fork_name}: extracted {rbfs} RBF(s), {mras} MRA(s) into {arcade_dir}")
+        if rbfs == 0 and fb_rbfs == 0:
+            print(f"::warning::{fork_name}: no jt*.rbf produced from jtbindb")
+        print(f"{fork_name}: {rbfs} DB9 RBF, {fb_rbfs} jotego-fallback RBF, "
+              f"{mras} MRA (DB9 zip), {fb_files} jotego-fallback file(s) into "
+              f"{arcade_dir}")
 
-    # Side-channel manifest of every jotego RBF basename produced this run, so
-    # inject_stable_clean_slugs.py (Hook 4) can deterministically skip these
-    # entries instead of warning that they have no SYNCING_FORKS section.
-    # Written unconditionally (even when empty) so a stale prior-run manifest
-    # never leaks into Hook 4.
+    # Side-channel slice for inject_jtbindb_tags.py (Hook 5). Written
+    # unconditionally (even when empty) so a stale prior-run slice never
+    # leaks into Hook 5.
     try:
-        with open(JOTEGO_FILES_JSON_PATH, 'w') as f:
-            json.dump(sorted(set(produced_rbfs)), f)
+        with open(JTBINDB_SLICE_JSON_PATH, 'w') as f:
+            json.dump({'by_path': by_path}, f)
     except OSError as e:
-        print(f"::warning::failed to write {JOTEGO_FILES_JSON_PATH}: {e}")
+        print(f"::warning::failed to write {JTBINDB_SLICE_JSON_PATH}: {e}")
+# [MiSTer-DB9 END]
 
 
 if __name__ == '__main__':
