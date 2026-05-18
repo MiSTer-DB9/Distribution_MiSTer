@@ -175,12 +175,31 @@ def inject_fork_only_cores(cores, forks):
 UNSTABLE_ASSET_RE = re.compile(r'^.*_unstable_\d{8}_\d{4}_[0-9a-f]{7}(?:_DB9)?(?:\.[A-Za-z0-9]+)?$')
 UNSTABLE_TAG_NAME = 'unstable-builds'
 UNSTABLE_FORKS_JSON_PATH = '/tmp/unstable_forks.json'
+# Side-channel manifest of jotego-bundle RBF basenames produced this run.
+# Consumed by inject_stable_clean_slugs.py (Hook 4) so it can deterministically
+# skip jotego entries instead of warning on them — the dated+sha7+_DB9 names
+# now match its STABLE_ASSET_RE but Jotego_jtcores is intentionally not a
+# SYNCING_FORKS section.
+JOTEGO_FILES_JSON_PATH = '/tmp/jotego_bundle_files.json'
+JOTEGO_ASSET_NAME = 'jtcores-mister-db9.zip'
+# jtcores nightly release encodes the source commit in its tag (`mister-<sha>`);
+# the body's `Built from `<sha>`` line is the fallback when the tag is renamed.
+JOTEGO_TAG_SHA_RE = re.compile(r'^mister-([0-9a-f]{7,40})$')
+JOTEGO_BODY_SHA_RE = re.compile(r'Built from `([0-9a-f]{40})`')
 
 def _parse_fork_repo(url):
     """Extract (owner, name) from FORK_REPO URL. Mirrors the regex used in
     setup_cicd.sh / sync_unstable.sh."""
     m = re.match(r'^(?:[a-zA-Z]+://)?github\.com(?::\d+)?/([a-zA-Z0-9_-]+)/([a-zA-Z0-9_-]+)(?:\.[a-zA-Z0-9]+)?$', url)
     return (m.group(1), m.group(2)) if m else (None, None)
+
+def _github_api_headers():
+    """GitHub REST headers, with the optional GITHUB_TOKEN bearer applied."""
+    token = os.environ.get('GITHUB_TOKEN', '').strip()
+    headers = {'Accept': 'application/vnd.github+json'}
+    if token:
+        headers['Authorization'] = f'token {token}'
+    return headers
 
 def _download_asset(asset, out_path, headers, fork_name):
     """Stream `asset` to `out_path` with chunked writes. Unlinks the partial
@@ -303,10 +322,7 @@ def inject_unstable_files(target_dir, forks):
     out_dir = Path(target_dir) / '_Unstable'
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    token = os.environ.get('GITHUB_TOKEN', '').strip()
-    headers = {'Accept': 'application/vnd.github+json'}
-    if token:
-        headers['Authorization'] = f'token {token}'
+    headers = _github_api_headers()
 
     tasks = []
     for fork_name in unstable_list:
@@ -475,10 +491,7 @@ def inject_stable_files(target_dir, forks):
     stable_forks = raw.split()
     print(f"Stable forks ({len(stable_forks)}): {stable_forks}")
 
-    token = os.environ.get('GITHUB_TOKEN', '').strip()
-    headers = {'Accept': 'application/vnd.github+json'}
-    if token:
-        headers['Authorization'] = f'token {token}'
+    headers = _github_api_headers()
 
     category_index = _build_category_index(target_dir)
 
@@ -526,13 +539,16 @@ def fetch_jotego_bundles(forks, target_dir):
     """For each Forks.ini section with IS_JOTEGO_BUNDLE = true, download the
     GH release ZIP at RELEASE_URL and unpack it into the distribution:
 
-      release/mister/jt<core>.rbf                     → <target>/_Arcade/cores/jt<core>_<YYYYMMDD>_DB9.rbf
+      release/mister/jt<core>.rbf                     → <target>/_Arcade/cores/jt<core>_<YYYYMMDD>_<sha7>_DB9.rbf
       release/mra/<game>.mra                          → <target>/_Arcade/<game>.mra
       release/mra/_alternatives/_<Core>/<v>.mra       → <target>/_Arcade/_alternatives/_<Core>/<v>.mra
 
-    RBFs are date-stamped on purpose, with a trailing _DB9 marker so the
-    on-SD filename is coherent with every regular fork core
-    (<Core>_<YYYYMMDD>_<sha7>_DB9.rbf). jotego .mra reference the core via a
+    RBFs are date-stamped and carry the jtcores commit sha7 plus a trailing
+    _DB9 marker so the on-SD filename is byte-for-byte coherent with every
+    regular fork core (<Core>_<YYYYMMDD>_<sha7>_DB9.rbf). The sha7 is the
+    short commit of the MiSTer-DB9/jtcores release the bundle was built from,
+    read from that release's `mister-<sha7>` tag (the jtcores build workflow
+    lives in that repo, not here). jotego .mra reference the core via a
     bare <rbf>jt<core></rbf>; MiSTer's get_rbf() (Main_MiSTer
     support/arcade/mra_loader.cpp) matches any file whose name starts with
     that fragment followed by '.' or '_', and keeps the lexicographically
@@ -561,6 +577,7 @@ def fetch_jotego_bundles(forks, target_dir):
     target_dir = Path(target_dir)
     arcade_dir = target_dir / '_Arcade'
     cores_dir = arcade_dir / 'cores'
+    produced_rbfs = []  # basenames → JOTEGO_FILES_JSON_PATH manifest for Hook 4
     for fork_name, cfg in forks.items():
         if cfg.get('is_jotego_bundle', '').strip().lower() != 'true':
             continue
@@ -568,12 +585,50 @@ def fetch_jotego_bundles(forks, target_dir):
         if not url:
             print(f"::warning::{fork_name}: IS_JOTEGO_BUNDLE without RELEASE_URL — skipping")
             continue
-        print(f"Fetching jotego bundle '{fork_name}' from {url}")
+
+        # Resolve sha7 AND the zip URL from the SAME release: a static
+        # releases/latest/download URL would race a release published between
+        # the metadata read and the download, mismatching the sha7 baked into
+        # the filename against the bytes actually shipped.
+        sha7 = ''
+        dl_url = url
+        owner, name = _parse_fork_repo(cfg.get('fork_repo', ''))
+        if owner:
+            rel_url = f'https://api.github.com/repos/{owner}/{name}/releases/latest'
+            try:
+                rr = requests.get(rel_url, headers=_github_api_headers(), timeout=30)
+                if rr.status_code == 200:
+                    rel = rr.json()
+                    m = (JOTEGO_TAG_SHA_RE.match(rel.get('tag_name', '') or '')
+                         or JOTEGO_BODY_SHA_RE.search(rel.get('body', '') or ''))
+                    if m:
+                        sha7 = m.group(1)[:7]
+                    for asset in rel.get('assets', []) or []:
+                        if asset.get('name') == JOTEGO_ASSET_NAME:
+                            dl_url = asset.get('browser_download_url') or url
+                            break
+                else:
+                    print(f"::warning::{fork_name}: releases/latest API "
+                          f"returned {rr.status_code} — falling back to "
+                          f"RELEASE_URL, no sha7 in filenames")
+            except requests.RequestException as e:
+                print(f"::warning::{fork_name}: releases/latest API failed "
+                      f"({e}) — falling back to RELEASE_URL, no sha7 in "
+                      f"filenames")
+        else:
+            print(f"::warning::{fork_name}: malformed/absent FORK_REPO — "
+                  f"cannot derive sha7, falling back to RELEASE_URL")
+        if not sha7:
+            print(f"::warning::{fork_name}: could not derive jtcores sha7 — "
+                  f"RBF names will lack the _<sha7> field this run")
+
+        print(f"Fetching jotego bundle '{fork_name}' from {dl_url}"
+              f"{f' (sha7 {sha7})' if sha7 else ''}")
         try:
-            resp = requests.get(url, timeout=600, stream=True, allow_redirects=True)
+            resp = requests.get(dl_url, timeout=600, stream=True, allow_redirects=True)
             resp.raise_for_status()
         except requests.RequestException as e:
-            print(f"::error::{fork_name}: failed to fetch {url}: {e}")
+            print(f"::error::{fork_name}: failed to fetch {dl_url}: {e}")
             continue
 
         date_stamp = datetime.datetime.now().strftime('%Y%m%d')
@@ -605,14 +660,18 @@ def fetch_jotego_bundles(forks, target_dir):
                     parts = Path(member).parts
                     parent = Path(member).parent.as_posix()
                     if name.endswith('.rbf') and '/mister' in '/' + parent:
-                        # Date-stamped + _DB9 marker so MiSTer get_rbf()'s
-                        # lexicographic pick favours this over jtcores' bare
-                        # jt<core>.rbf and the name matches regular cores
-                        # (see docstring); rel_path differs from jtcores so
-                        # no Downloader dedup collision.
-                        out = cores_dir / f"{Path(name).stem}_{date_stamp}_DB9.rbf"
+                        # Date-stamped + sha7 + _DB9 marker so MiSTer
+                        # get_rbf()'s lexicographic pick favours this over
+                        # jtcores' bare jt<core>.rbf and the name matches
+                        # regular cores exactly (<Core>_<YYYYMMDD>_<sha7>_DB9;
+                        # see docstring). rel_path differs from jtcores so no
+                        # Downloader dedup collision. sha7 omitted only when
+                        # the release API was unreachable (graceful fallback).
+                        infix = f"{date_stamp}_{sha7}" if sha7 else date_stamp
+                        out = cores_dir / f"{Path(name).stem}_{infix}_DB9.rbf"
                         with zf.open(member) as src, open(out, 'wb') as dst:
                             shutil.copyfileobj(src, dst)
+                        produced_rbfs.append(out.name)
                         rbfs += 1
                     elif name.endswith('.mra') and 'mra' in parts:
                         # Preserve the path below the zip's mra/ dir so
@@ -635,6 +694,17 @@ def fetch_jotego_bundles(forks, target_dir):
         if rbfs == 0:
             print(f"::warning::{fork_name}: no jt*.rbf entries found under release/mister/ in bundle")
         print(f"{fork_name}: extracted {rbfs} RBF(s), {mras} MRA(s) into {arcade_dir}")
+
+    # Side-channel manifest of every jotego RBF basename produced this run, so
+    # inject_stable_clean_slugs.py (Hook 4) can deterministically skip these
+    # entries instead of warning that they have no SYNCING_FORKS section.
+    # Written unconditionally (even when empty) so a stale prior-run manifest
+    # never leaks into Hook 4.
+    try:
+        with open(JOTEGO_FILES_JSON_PATH, 'w') as f:
+            json.dump(sorted(set(produced_rbfs)), f)
+    except OSError as e:
+        print(f"::warning::failed to write {JOTEGO_FILES_JSON_PATH}: {e}")
 
 
 if __name__ == '__main__':
