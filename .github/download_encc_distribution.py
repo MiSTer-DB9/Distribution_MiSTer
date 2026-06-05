@@ -174,6 +174,11 @@ def inject_fork_only_cores(cores, forks):
 # no extension) is matched alongside FPGA cores' `*.rbf`.
 UNSTABLE_ASSET_RE = re.compile(r'^.*_unstable_\d{8}_\d{4}_[0-9a-f]{7}(?:_DB9)?(?:\.[A-Za-z0-9]+)?$')
 UNSTABLE_TAG_NAME = 'unstable-builds'
+# Depth of the per-variant rollback set mirrored onto the SD card / committed
+# into the distribution git tree, to bound the committed tree's size. The fork's
+# `unstable-builds` Release keeps the full RETENTION=7 history
+# (Forks_MiSTer/fork_ci_template/.github/unstable_lib.sh) for browsing rollback.
+UNSTABLE_SD_RETENTION = 3
 UNSTABLE_FORKS_JSON_PATH = '/tmp/unstable_forks.json'
 # Side-channel slice of jotego's authoritative jtbindb manifest produced this
 # run: { "by_path": { produced_rel_path: [tag-name, ...] } }. Consumed by
@@ -278,6 +283,10 @@ def _fetch_one_unstable(fork_name, section, out_dir, headers):
         print(f"::warning::{fork_name}: '{UNSTABLE_TAG_NAME}' has no {asset_prefix}* asset — skipping")
         return
     candidates.sort(key=lambda a: a.get('created_at', ''), reverse=True)
+    # Cap to the newest UNSTABLE_SD_RETENTION per variant; the stale-sweep below
+    # then unlinks any deeper RBFs already on the SD card from a prior run, so
+    # the on-disk depth self-corrects.
+    candidates = candidates[:UNSTABLE_SD_RETENTION]
 
     # Per-variant subdir under _Unstable/ — RELEASE_CORE_NAME is unique
     # across Forks.ini (collision would already break fork-side asset
@@ -328,8 +337,9 @@ def _fetch_one_unstable(fork_name, section, out_dir, headers):
 def inject_unstable_files(target_dir, forks):
     """For each fork in Forks[UNSTABLE_FORKS], mirror the fork's
     `unstable-builds` Release into target_dir/_Unstable/_<RELEASE_CORE_NAME>/
-    in parallel — up to the newest 7 retained RBFs per variant land on the
-    SD card so users have a local rollback set without browsing GitHub.
+    in parallel — up to the newest UNSTABLE_SD_RETENTION (3) RBFs per variant
+    land on the SD card so users have a local rollback set without browsing
+    GitHub (the Release keeps the full RETENTION=7 history).
     Stale RBFs in each variant's subdir are pruned to track Release state."""
     raw = forks.get('Forks', {}).get('unstable_forks', '').strip()
     if not raw:
