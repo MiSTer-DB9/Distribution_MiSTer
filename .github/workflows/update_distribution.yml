@@ -29,19 +29,15 @@ jobs:
       # [MiSTer-DB9 END]
 
     steps:
-    # [MiSTer-DB9 BEGIN] - relocate workspace to the runner's large /mnt scratch
-    # disk (~70-80 GB vs ~14-21 GB free on /). The distribution peak is ~2.5-3x
-    # the data at Push Database (git fetch --unshallow re-pulls the prior main +
-    # zips objects on top of the current worktree + objects). Free big unused
-    # toolchains on / as extra margin. MUST run before checkout so the clone,
-    # .git objects and downloaded data all land on /mnt.
-    - name: Relocate workspace to large /mnt disk
+    # [MiSTer-DB9 BEGIN] - free big unused toolchains for headroom + log disk.
+    # The runner now ships a single ~145 GB root fs (/mnt is no longer a separate
+    # scratch disk — df shows /mnt and / as the same /dev/root), with ~105 GB free,
+    # so the old bind-mount-to-/mnt relocation gained nothing and was dropped. The
+    # toolchain free + df stay as cheap margin/early-warning at the Push peak.
+    - name: Free disk space
       run: |
-        sudo mkdir -p /mnt/work
-        sudo chown "$(id -u):$(id -g)" /mnt/work
-        sudo mount --bind /mnt/work "${GITHUB_WORKSPACE}"
         sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
-        df -h / /mnt || true
+        df -h / || true
     # [MiSTer-DB9 END]
 
     - name: Install apt-get utilities
