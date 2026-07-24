@@ -19,10 +19,10 @@
 # category like `console`) are preserved so default `filter = console` still
 # pulls fork stable consoles.
 #
-# Orphaned `tag_dictionary` entries (polluted names no longer referenced by
-# any file/folder after the rewrite) are pruned in a second pass — db_operator's
-# `_used` set is finalised at build time so without explicit pruning the
-# polluted names would linger in the dict forever.
+# The polluted names this hook replaced are dropped from `tag_dictionary` in a
+# second pass (db_operator's `_used` set is finalised at build time, so without
+# explicit pruning they would linger in the dict forever). Only those names are
+# pruned; see the pass 2 comment for why a full reachability sweep is unsafe.
 #
 # Sections that declare DISTRIBUTION_FILTERS are skipped: Hook 3 already
 # replaced their `entry['tags']` with explicit tokens; the polluted tag id
@@ -38,10 +38,8 @@
 import io
 import json
 import os
-import pathlib
 import re
 import sys
-import zipfile
 import configparser
 
 # Mandatory `_DB9` anchor: this hook only ever touches fork-built stable RBFs.
@@ -219,49 +217,35 @@ def main(db_path):
         affected.append((path, polluted_id, clean_id))
         touched += 1
 
-    # Pass 2: prune orphaned tag_dictionary entries.
+    # Pass 2: prune the polluted tag names this hook just replaced, and only
+    # those.
     #
-    # `db_operator.save_zips()` strips `summary_file_content` from each zip
-    # before writing dbencc.json (db_operator.py line 1119:
-    # `del zip_description['summary_file_content']`), then emits a separate
-    # `<zip_id>_summary.json.zip` in cwd carrying those entries. So the union
-    # below MUST also read those on-disk summary zips — otherwise we'd prune
-    # `tag_dictionary` ids that are only referenced from external summaries
-    # (e.g. Filters/CRT-Sim/*.txt → tag id 391). When the next CI run downloads
-    # the published dbencc.json, `get_url_db()` repopulates `summary_file_content`
-    # from those external zip URLs, and `mut_diff_db` then crashes with KeyError
-    # on the pruned id.
+    # Deliberately NOT a whole-dictionary reachability sweep. Such a sweep has
+    # to enumerate every place a tag id can be referenced, and db_operator keeps
+    # moving those places: `summary_file_content` is stripped out of the db into
+    # external `<archive_id>_summary.json.zip` files, and upstream renamed the
+    # `zips` section to `archives` (2026-07), which silently turned the sweep's
+    # summary walk into a no-op. The sweep then deleted every id referenced only
+    # from an archive summary (Filters / Shadow_Masks / fonts / mra_alternatives),
+    # and the next CI run, whose `get_url_db()` repopulates those summaries from
+    # their external URLs, died inside `mut_diff_db` with `KeyError: 428`.
+    #
+    # Pruning only the ids we removed ourselves needs no knowledge of the db
+    # schema. Leftover unreferenced names elsewhere are harmless (a filter term
+    # that matches nothing); a MISSING name is what breaks the db.
     used = set()
     for entry in db.get('files', {}).values():
         used.update(entry.get('tags', []) or [])
     for entry in db.get('folders', {}).values():
         used.update(entry.get('tags', []) or [])
-    for zip_entry in db.get('zips', {}).values():
-        sfc = zip_entry.get('summary_file_content', {}) or {}
-        for sub in (sfc.get('files', {}) or {}).values():
-            used.update(sub.get('tags', []) or [])
-        for sub in (sfc.get('folders', {}) or {}).values():
-            used.update(sub.get('tags', []) or [])
 
-    db_dir = pathlib.Path(db_path).resolve().parent
-    for zid in db.get('zips', {}).keys():
-        summary_zip = db_dir / f'{zid}_summary.json.zip'
-        if not summary_zip.is_file():
-            continue
-        with zipfile.ZipFile(summary_zip) as zf:
-            names = zf.namelist()
-            if not names:
-                continue
-            with zf.open(names[0]) as f:
-                sf = json.load(f)
-        for sub in (sf.get('files') or {}).values():
-            used.update(sub.get('tags') or [])
-        for sub in (sf.get('folders') or {}).values():
-            used.update(sub.get('tags') or [])
-
+    inverse = {v: k for k, v in db['tag_dictionary'].items()}
     pruned = 0
-    for name in list(db['tag_dictionary'].keys()):
-        if db['tag_dictionary'][name] not in used:
+    for polluted_id in {pid for _, pid, _ in affected}:
+        if polluted_id in used:
+            continue
+        name = inverse.get(polluted_id)
+        if name is not None:
             del db['tag_dictionary'][name]
             pruned += 1
 

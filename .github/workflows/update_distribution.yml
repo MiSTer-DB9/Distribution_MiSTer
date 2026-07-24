@@ -18,6 +18,16 @@ jobs:
       DB_JSON_NAME: dbencc.json
       DB_ID: distribution_mister
       DB_URL: https://raw.githubusercontent.com/MiSTer-DB9/Distribution_MiSTer/main/dbencc.json.zip
+      # [MiSTer-DB9 BEGIN] - TEMPORARY, revert right after the first green run.
+      # The currently published dbencc.json has a tag_dictionary missing every id
+      # that is only referenced from an archive summary, so db_operator's
+      # needs_save() dies with `KeyError: 428` while diffing against it and the
+      # job can never publish the repaired db. Pointing the diff at a URL that
+      # 404s makes needs_save() take its ReturnCodeException path (returns True,
+      # publishes unconditionally); DB_URL itself stays correct so the value
+      # baked into the published db is unchanged.
+      TEST_DB_URL: https://raw.githubusercontent.com/MiSTer-DB9/Distribution_MiSTer/main/dbencc-force-republish.json.zip
+      # [MiSTer-DB9 END]
       ZIPS_CONFIG: /tmp/zips_config.json
       LINUX_GITHUB_REPOSITORY: MiSTer-devel/SD-Installer-Win64_MiSTer
       BROKEN_MRAS_IGNORE: true
