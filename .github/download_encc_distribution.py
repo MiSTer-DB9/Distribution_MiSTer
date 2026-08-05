@@ -14,6 +14,7 @@ import tempfile
 import datetime
 import configparser
 from pathlib import Path
+from urllib.parse import quote
 from concurrent.futures import ThreadPoolExecutor
 import subprocess
 try:
@@ -69,6 +70,12 @@ def main():
     # [MiSTer-DB9 BEGIN] - overlay v2 forks' newest stable release asset onto whatever
     # process_all() pulled from the (possibly stale) legacy releases/ dir.
     inject_stable_files(target_dir, forks)
+
+    # [MiSTer-DB9 BEGIN] - mirror an upstream's committed .mra / _alternatives
+    # set for forks whose upstream publishes them outside a root releases/ dir
+    # (DISTRIBUTION_MRA_PATH). Inert for every other section.
+    inject_upstream_mras(target_dir, forks)
+    # [MiSTer-DB9 END]
 
     # [MiSTer-DB9 BEGIN] - unstable channel: download newest *_unstable_*.rbf
     # from each UNSTABLE_FORKS entry's "unstable-builds" GitHub Release into
@@ -534,6 +541,69 @@ def inject_stable_files(target_dir, forks):
 
     with ThreadPoolExecutor(max_workers=16) as ex:
         list(ex.map(lambda t: _fetch_one_stable(t[0], t[1], category_index, headers, target_dir), tasks))
+
+
+def inject_upstream_mras(target_dir, forks):
+    """Mirror an upstream's committed .mra set onto the SD tree.
+
+    MRAs and _alternatives/ normally reach SD because upstream commits them
+    under a root `releases/` dir that upstream's own process_all() clones.
+    A third-party arcade upstream may publish elsewhere (misteraddons/SYSTEM11
+    keeps its .mra + _alternatives under release/_Arcade/), and _fetch_one_stable
+    mirrors the RBF only. DISTRIBUTION_MRA_PATH names that directory; every
+    .mra blob beneath it is copied to target_dir/<basename of that path>/<rel>,
+    preserving _alternatives/ subdirs. db_operator build then indexes them with
+    the normal path-derived _Arcade tags, so no tag hook is needed.
+
+    Deliberately a git/trees + raw-content fetch rather than upstream's
+    download_repository() shallow clone: this upstream commits its built RBFs
+    next to the MRAs, so a clone pulls ~14 MB to reach ~83 KB of .mra.
+
+    Inert for every section without the key.
+    """
+    headers = _github_api_headers()
+    for fork_name in forks.get('Forks', {}).get('syncing_forks', '').split():
+        section = forks.get(fork_name) or {}
+        mra_path = section.get('distribution_mra_path', '').strip().strip('/')
+        if not mra_path:
+            continue
+        owner, name = _parse_fork_repo(section.get('upstream_repo', '').strip())
+        if not owner:
+            print(f"::warning::{fork_name}: DISTRIBUTION_MRA_PATH set but upstream_repo is malformed or absent, skipping MRAs")
+            continue
+        branch = section.get('upstream_branch', '').strip() or section.get('main_branch', '').strip()
+
+        tree_url = f'https://api.github.com/repos/{owner}/{name}/git/trees/{branch}?recursive=1'
+        try:
+            r = requests.get(tree_url, headers=headers, timeout=60)
+            r.raise_for_status()
+        except requests.RequestException as e:
+            print(f"::warning::{fork_name}: MRA tree listing failed: {e}")
+            continue
+        tree = r.json()
+        if tree.get('truncated'):
+            print(f"::warning::{fork_name}: git tree for {owner}/{name}@{branch} is truncated, MRA set may be incomplete")
+
+        out_base = Path(target_dir) / Path(mra_path).name
+        prefix = mra_path + '/'
+        jobs = []
+        for node in tree.get('tree', []):
+            path = node.get('path', '')
+            if node.get('type') != 'blob' or not path.startswith(prefix):
+                continue
+            if not path.lower().endswith('.mra'):
+                continue
+            rel = path[len(prefix):]
+            raw = f'https://raw.githubusercontent.com/{owner}/{name}/{branch}/{quote(path)}'
+            jobs.append((raw, out_base / rel))
+
+        if not jobs:
+            print(f"::warning::{fork_name}: no .mra found under {mra_path} in {owner}/{name}@{branch}")
+            continue
+
+        with ThreadPoolExecutor(max_workers=16) as ex:
+            ok = list(ex.map(lambda j: _stream_to_file(j[0], j[1], fork_name, f"MRA download failed for {j[1].name}", headers=headers, mkdir=True), jobs))
+        print(f"{fork_name}: mirrored {sum(ok)}/{len(jobs)} .mra from {owner}/{name}@{branch}:{mra_path} into {out_base.name}/")
 # [MiSTer-DB9 END]
 
 
