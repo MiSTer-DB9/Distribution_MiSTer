@@ -27,6 +27,33 @@ except ImportError as _:
 
 download_distribution = httpimport.load('download_distribution', 'https://raw.githubusercontent.com/MiSTer-devel/Distribution_MiSTer/main/.github')
 
+# [MiSTer-DB9 BEGIN] - several wiki entries share one repo+category (Asteroids,
+# Asteroids Deluxe and Lunar Lander all live in Arcade-Asteroids_MiSTer), and
+# upstream's clone path is derived from repo+category only. In the 30-thread
+# pool those entries then rmtree/makedirs/clone the SAME temp dir concurrently
+# and clobber each other ("[Errno 17] File exists", "shallow.lock: File exists",
+# "cannot create directory at 'releases'"), which exhausts the retry wrapper and
+# fails the whole run. Clone each path once, under a lock.
+def dedupe_repository_clones():
+    import threading
+
+    original = download_distribution.download_repository
+    guard = threading.Lock()
+    locks = {}
+    done = set()
+
+    def download_repository_once(path, url, branch):
+        with guard:
+            lock = locks.setdefault(path, threading.Lock())
+        with lock:
+            if path in done:
+                return
+            original(path, url, branch)
+            done.add(path)
+
+    download_distribution.download_repository = download_repository_once
+# [MiSTer-DB9 END]
+
 def main():
 
     start = time.time()
@@ -63,6 +90,7 @@ def main():
     cores = filter_dead_cores(cores)
 
     target_dir = download_distribution.read_target_dir()
+    dedupe_repository_clones()
     download_distribution.process_all(extra_content_categories, cores, target_dir)
 
     fetch_jotego_bundles(forks, target_dir)
