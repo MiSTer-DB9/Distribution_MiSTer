@@ -580,8 +580,11 @@ def inject_upstream_mras(target_dir, forks):
     keeps its .mra + _alternatives under release/_Arcade/), and _fetch_one_stable
     mirrors the RBF only. DISTRIBUTION_MRA_PATH names that directory; every
     .mra blob beneath it is copied to target_dir/<basename of that path>/<rel>,
-    preserving _alternatives/ subdirs. db_operator build then indexes them with
-    the normal path-derived _Arcade tags, so no tag hook is needed.
+    preserving _alternatives/ subdirs. DISTRIBUTION_MRA_TARGET overrides that
+    target subdir when the basename is not the SD dir (kyledlester/Namco_NB2
+    keeps them under MRA/, which must land in _Arcade/). db_operator build then
+    indexes them with the normal path-derived _Arcade tags, so no tag hook is
+    needed.
 
     Deliberately a git/trees + raw-content fetch rather than upstream's
     download_repository() shallow clone: this upstream commits its built RBFs
@@ -612,7 +615,8 @@ def inject_upstream_mras(target_dir, forks):
         if tree.get('truncated'):
             print(f"::warning::{fork_name}: git tree for {owner}/{name}@{branch} is truncated, MRA set may be incomplete")
 
-        out_base = Path(target_dir) / Path(mra_path).name
+        mra_target = section.get('distribution_mra_target', '').strip().strip('/') or Path(mra_path).name
+        out_base = Path(target_dir) / mra_target
         prefix = mra_path + '/'
         jobs = []
         for node in tree.get('tree', []):
@@ -631,7 +635,7 @@ def inject_upstream_mras(target_dir, forks):
 
         with ThreadPoolExecutor(max_workers=16) as ex:
             ok = list(ex.map(lambda j: _stream_to_file(j[0], j[1], fork_name, f"MRA download failed for {j[1].name}", headers=headers, mkdir=True), jobs))
-        print(f"{fork_name}: mirrored {sum(ok)}/{len(jobs)} .mra from {owner}/{name}@{branch}:{mra_path} into {out_base.name}/")
+        print(f"{fork_name}: mirrored {sum(ok)}/{len(jobs)} .mra from {owner}/{name}@{branch}:{mra_path} into {mra_target}/")
 # [MiSTer-DB9 END]
 
 
